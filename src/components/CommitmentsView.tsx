@@ -8,16 +8,13 @@ interface Props {
 }
 
 export function CommitmentsView({ onOpenMeeting }: Props) {
-  const [items, setItems] = useState(COMMITMENTS);
+  const [items, setItems] = useState(getBackend().mode === "tauri" ? [] : COMMITMENTS);
   const [filter, setFilter] = useState<"open" | "all">("open");
 
-  // Real ledger when running on the Rust backend.
+  // Real ledger when running on the Rust backend; the mock list is demo-only.
   useEffect(() => {
     if (getBackend().mode === "tauri") {
-      getBackend()
-        .listCommitments()
-        .then((rows) => rows.length > 0 && setItems(rows))
-        .catch(() => {});
+      getBackend().listCommitments().then(setItems).catch(() => {});
     }
   }, []);
 

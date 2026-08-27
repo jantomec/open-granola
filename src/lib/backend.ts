@@ -9,7 +9,7 @@
  * The UI never branches on mode directly except where the demo needs to
  * simulate latency/streaming; everything else goes through this layer.
  */
-import type { ActionItem, Brief, Commitment, Meeting, Person } from "./types";
+import type { ActionItem, Brief, Commitment, Meeting, Person, Project } from "./types";
 import { ACTION_ITEMS, BRIEF, COMMITMENTS, MEETINGS } from "./data";
 
 export interface SearchHit {
@@ -38,6 +38,12 @@ export interface Backend {
   startCapture(meetingHint?: string): Promise<void>;
   stopCapture(segments: LiveSegment[], template: string): Promise<string>;
   onSegment(cb: (seg: LiveSegment) => void): Promise<() => void>;
+  listActionItems(): Promise<ActionItem[]>;
+  listProjects(): Promise<Project[]>;
+  createProject(name: string): Promise<string>;
+  renameProject(id: string, name: string): Promise<void>;
+  deleteProject(id: string): Promise<void>;
+  setMeetingProject(meetingId: string, projectId: string | null): Promise<void>;
   getBrief(): Promise<Brief | null>;
   listCommitments(): Promise<Commitment[]>;
   markCommitment(id: string, status: "open" | "kept"): Promise<void>;
@@ -70,6 +76,12 @@ const demoBackend: Backend = {
   startCapture: async () => {},
   stopCapture: async () => "",
   onSegment: async () => () => {},
+  listActionItems: async () => ACTION_ITEMS,
+  listProjects: async () => [],
+  createProject: async () => "",
+  renameProject: async () => {},
+  deleteProject: async () => {},
+  setMeetingProject: async () => {},
   getBrief: async () => BRIEF,
   listCommitments: async () => COMMITMENTS,
   markCommitment: async () => {},
@@ -113,6 +125,7 @@ interface RemoteGetMeeting {
     decisions: string | null;
     template: string | null;
     starred: number;
+    project_id: string | null;
   };
   segments: { id: string; start_ms: number; end_ms: number; speaker: number; text: string }[];
   action_items: { id: string; text: string; owner: string | null; due: string | null; done: number }[];
@@ -147,6 +160,7 @@ function adaptMeeting(id: string, m: RemoteGetMeeting["meeting"], segs: RemoteGe
     tags: [],
     template: m.template ?? "Meeting",
     starred: m.starred === 1,
+    projectId: m.project_id ?? undefined,
   };
 }
 
@@ -202,6 +216,40 @@ const tauriBackend: Backend = {
   },
 
   toggleAction: (id, done) => tauriInvoke("toggle_action_item", { id, done }),
+
+  async listActionItems() {
+    const rows = await tauriInvoke<
+      {
+        id: string; text: string; owner: string | null; due: string | null;
+        done: number; meeting_id: string; meeting_title: string;
+      }[]
+    >("list_action_items");
+    return rows.map((r) => ({
+      id: r.id,
+      text: r.text,
+      owner: r.owner ?? "Unassigned",
+      due: r.due ?? undefined,
+      done: r.done === 1,
+      meetingId: r.meeting_id,
+      meetingTitle: r.meeting_title,
+    }));
+  },
+
+  async listProjects() {
+    const rows = await tauriInvoke<{ id: string; name: string; meeting_count: number }[]>(
+      "list_projects",
+    );
+    return rows.map((r) => ({ id: r.id, name: r.name, meetingCount: r.meeting_count }));
+  },
+
+  createProject: (name) => tauriInvoke<string>("create_project", { name }),
+
+  renameProject: (id, name) => tauriInvoke("rename_project", { id, name }),
+
+  deleteProject: (id) => tauriInvoke("delete_project", { id }),
+
+  setMeetingProject: (meetingId, projectId) =>
+    tauriInvoke("set_meeting_project", { meetingId, projectId }),
 
   startCapture: (meetingHint) => tauriInvoke("start_capture", { meetingHint: meetingHint ?? null }),
 

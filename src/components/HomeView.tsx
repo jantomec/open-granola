@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowRight, Calendar, ChevronDown, Flame, History, Lightbulb, Lock, Sparkles, Video } from "lucide-react";
-import { useState } from "react";
-import { ACTION_ITEMS, MEETINGS } from "../lib/data";
+import { useEffect, useState } from "react";
+import { getBackend } from "../lib/backend";
 import type { Brief, Meeting } from "../lib/types";
 import { AvatarStack } from "./Avatar";
 
@@ -15,19 +15,40 @@ interface Props {
 export function HomeView({ meetings, brief, onOpenMeeting, onRecord, onAsk }: Props) {
   const [q, setQ] = useState("");
   const [briefOpen, setBriefOpen] = useState(true);
-  const open = ACTION_ITEMS.filter((a) => !a.done).length;
-  const weekMins = MEETINGS.reduce((s, m) => s + m.durationMin, 0);
+  const [open, setOpen] = useState(0);
+
+  useEffect(() => {
+    getBackend()
+      .listActionItems()
+      .then((items) => setOpen(items.filter((a) => !a.done).length))
+      .catch(() => {});
+  }, [meetings]);
+
+  const week = meetings.filter((m) => Date.now() - +new Date(m.date) < 7 * 86400000);
+  const weekMins = week.reduce((s, m) => s + m.durationMin, 0);
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning." : hour < 18 ? "Good afternoon." : "Good evening.";
 
   return (
     <div className="scrollbar-thin paper-texture flex-1 overflow-y-auto">
       <div className="mx-auto max-w-3xl px-8 pb-16 pt-12">
         {/* hero */}
         <div className="animate-rise">
-          <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-primary">Sunday, July 19</p>
+          <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-primary">{today}</p>
           <h1 className="font-display mt-2 text-[44px] leading-[1.05]">
-            Good morning.
+            {greeting}
             <br />
-            <span className="ember-gradient-text">Four meetings</span> this week, all remembered.
+            {week.length > 0 ? (
+              <>
+                <span className="ember-gradient-text">
+                  {week.length === 1 ? "One meeting" : `${week.length} meetings`}
+                </span>{" "}
+                this week, all remembered.
+              </>
+            ) : (
+              <span className="ember-gradient-text">Ready when you are.</span>
+            )}
           </h1>
           <p className="mt-3 max-w-md text-[14px] leading-relaxed text-muted-foreground">
             Everything below was transcribed, enhanced, and indexed on this device. Nothing was uploaded, retained, or
@@ -64,7 +85,7 @@ export function HomeView({ meetings, brief, onOpenMeeting, onRecord, onAsk }: Pr
         {/* stats */}
         <div className="animate-rise mt-6 grid grid-cols-3 gap-3" style={{ animationDelay: "120ms" }}>
           {[
-            { icon: <Calendar size={15} />, label: "This week", value: `${meetings.length} meetings · ${weekMins} min` },
+            { icon: <Calendar size={15} />, label: "This week", value: `${week.length} meetings · ${weekMins} min` },
             { icon: <Flame size={15} />, label: "Open action items", value: `${open} across ${meetings.length} notes` },
             { icon: <Lock size={15} />, label: "Data that left this Mac", value: "0 bytes — ever" },
           ].map((s, i) => (
@@ -95,7 +116,7 @@ export function HomeView({ meetings, brief, onOpenMeeting, onRecord, onAsk }: Pr
                 Briefing ready: {brief.meetingTitle} — in {brief.startsIn}
               </div>
               <div className="text-[12.5px] text-muted-foreground">
-                Prepared on-device from your calendar and {MEETINGS.length} past meetings.{" "}
+                Prepared on-device from your calendar and {meetings.length} past meetings.{" "}
                 {brief.openCommitments.length} open commitments inside.
               </div>
             </div>
@@ -206,6 +227,11 @@ export function HomeView({ meetings, brief, onOpenMeeting, onRecord, onAsk }: Pr
         {/* recent meetings */}
         <div className="animate-rise mt-8" style={{ animationDelay: "240ms" }}>
           <h2 className="font-display text-[22px]">Recent notes</h2>
+          {meetings.length === 0 && (
+            <p className="mt-3 rounded-2xl border border-dashed border-border p-6 text-center text-[13px] text-muted-foreground">
+              Your library is empty. Capture a meeting and its notes will appear here.
+            </p>
+          )}
           <div className="mt-3 grid grid-cols-2 gap-3">
             {meetings.map((m) => (
               <button

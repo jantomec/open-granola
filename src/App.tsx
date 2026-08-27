@@ -12,7 +12,7 @@ import { MEETINGS, PEOPLE } from "./lib/data";
 import { getBackend } from "./lib/backend";
 import { useLiveSession, type LiveLine } from "./hooks/useLiveSession";
 import { useTauriSession } from "./hooks/useTauriSession";
-import type { Brief, Meeting, View } from "./lib/types";
+import type { Brief, Meeting, Project, View } from "./lib/types";
 
 const backend = getBackend();
 
@@ -20,8 +20,17 @@ export default function App() {
   const [dark, setDark] = useState(false);
   const [view, setView] = useState<View>({ kind: "home" });
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [meetings, setMeetings] = useState<Meeting[]>(MEETINGS);
+  // The bundled sample library exists for the browser demo only; the desktop
+  // app starts empty and shows exactly what the local database holds.
+  const [meetings, setMeetings] = useState<Meeting[]>(backend.mode === "tauri" ? [] : MEETINGS);
   const [brief, setBrief] = useState<Brief | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProject, setActiveProject] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const reloadProjects = useCallback(() => {
+    backend.listProjects().then(setProjects).catch(() => {});
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -31,10 +40,39 @@ export default function App() {
   // bundled sample library that powers the browser preview.
   useEffect(() => {
     if (backend.mode === "tauri") {
-      backend.listMeetings().then((ms) => ms.length > 0 && setMeetings(ms));
+      backend.listMeetings().then(setMeetings).catch(() => {});
+      reloadProjects();
     }
     backend.getBrief().then(setBrief).catch(() => {});
-  }, []);
+  }, [reloadProjects]);
+
+  const createProject = useCallback(
+    (name: string) => backend.createProject(name).then(reloadProjects),
+    [reloadProjects],
+  );
+  const renameProject = useCallback(
+    (id: string, name: string) => backend.renameProject(id, name).then(reloadProjects),
+    [reloadProjects],
+  );
+  const deleteProject = useCallback(
+    (id: string) =>
+      backend.deleteProject(id).then(() => {
+        setActiveProject((p) => (p === id ? null : p));
+        setMeetings((prev) => prev.map((m) => (m.projectId === id ? { ...m, projectId: undefined } : m)));
+        reloadProjects();
+      }),
+    [reloadProjects],
+  );
+  const assignProject = useCallback(
+    (meetingId: string, projectId: string | null) =>
+      backend.setMeetingProject(meetingId, projectId).then(() => {
+        setMeetings((prev) =>
+          prev.map((m) => (m.id === meetingId ? { ...m, projectId: projectId ?? undefined } : m)),
+        );
+        reloadProjects();
+      }),
+    [reloadProjects],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -101,7 +139,8 @@ export default function App() {
       setMeetings(fresh);
       setView({ kind: "meeting", id });
     } catch (e) {
-      console.error("enhance failed:", e);
+      console.error("save failed:", e);
+      setSaveError(String(e));
     }
   }, []);
 
@@ -111,11 +150,20 @@ export default function App() {
 
   const openMeeting = (id: string) => setView({ kind: "meeting", id });
   const activeMeeting = view.kind === "meeting" ? meetings.find((m) => m.id === view.id) : undefined;
+  const visibleMeetings = activeProject
+    ? meetings.filter((m) => m.projectId === activeProject)
+    : meetings;
 
   return (
     <div className="relative flex h-screen overflow-hidden bg-background text-foreground">
       <Sidebar
-        meetings={meetings}
+        meetings={visibleMeetings}
+        projects={projects}
+        activeProject={activeProject}
+        onSelectProject={setActiveProject}
+        onCreateProject={createProject}
+        onRenameProject={renameProject}
+        onDeleteProject={deleteProject}
         view={view}
         onNavigate={setView}
         onOpenSearch={() => setPaletteOpen(true)}
@@ -129,7 +177,7 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         {view.kind === "home" && (
           <HomeView
-            meetings={meetings}
+            meetings={visibleMeetings}
             brief={brief}
             onOpenMeeting={openMeeting}
             onRecord={live.start}
@@ -139,6 +187,8 @@ export default function App() {
         {view.kind === "meeting" && activeMeeting && (
           <NoteView
             meeting={activeMeeting}
+            projects={projects}
+            onSetProject={(pid) => assignProject(activeMeeting.id, pid)}
             onToggleAction={(id, done) => backend.toggleAction(id, done)}
             askFn={backend.mode === "tauri" ? (q) => backend.ask(q, activeMeeting.id) : undefined}
           />
@@ -156,6 +206,19 @@ export default function App() {
 
       {live.active && (
         <CaptureBar elapsed={live.elapsed} lines={live.lines} suggestions={live.suggestions} onStop={live.stop} />
+      )}
+
+      {saveError && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-sm rounded-2xl border border-destructive/40 bg-card p-4 shadow-lg">
+          <div className="text-[13px] font-semibold text-destructive">Saving the meeting failed</div>
+          <p className="mt-1 break-words text-[12.5px] text-muted-foreground">{saveError}</p>
+          <button
+            onClick={() => setSaveError(null)}
+            className="mt-2 text-[12px] font-semibold underline"
+          >
+            Dismiss
+          </button>
+        </div>
       )}
 
       {paletteOpen && (

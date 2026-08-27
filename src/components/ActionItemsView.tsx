@@ -1,6 +1,8 @@
 import { CheckCircle2, Circle, ExternalLink } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ACTION_ITEMS } from "../lib/data";
+import { getBackend } from "../lib/backend";
+import type { ActionItem } from "../lib/types";
 
 interface Props {
   onOpenMeeting: (id: string) => void;
@@ -8,8 +10,17 @@ interface Props {
 }
 
 export function ActionItemsView({ onOpenMeeting, onToggle }: Props) {
-  const [items, setItems] = useState(ACTION_ITEMS);
+  const [items, setItems] = useState<ActionItem[]>(
+    getBackend().mode === "tauri" ? [] : ACTION_ITEMS,
+  );
   const [filter, setFilter] = useState<"open" | "all">("open");
+
+  // Real items when running on the Rust backend; the mock list is demo-only.
+  useEffect(() => {
+    if (getBackend().mode === "tauri") {
+      getBackend().listActionItems().then(setItems).catch(() => {});
+    }
+  }, []);
 
   const shown = items.filter((a) => filter === "all" || !a.done);
   const byMeeting = shown.reduce<Record<string, typeof shown>>((acc, a) => {
@@ -43,6 +54,11 @@ export function ActionItemsView({ onOpenMeeting, onToggle }: Props) {
         </div>
 
         <div className="mt-6 space-y-6">
+          {shown.length === 0 && (
+            <p className="rounded-2xl border border-dashed border-border p-6 text-center text-[13px] text-muted-foreground">
+              No action items yet — they're extracted automatically when a meeting is enhanced.
+            </p>
+          )}
           {Object.entries(byMeeting).map(([title, list], gi) => (
             <div key={title} className="animate-rise" style={{ animationDelay: `${gi * 60}ms` }}>
               <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{title}</div>

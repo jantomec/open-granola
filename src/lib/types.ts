@@ -36,6 +36,13 @@ export interface Meeting {
   tags: string[];
   template: string;
   starred?: boolean;
+  projectId?: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  meetingCount: number;
 }
 
 export interface ChatMessage {

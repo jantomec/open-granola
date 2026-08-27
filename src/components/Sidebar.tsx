@@ -1,21 +1,32 @@
 import {
   CheckSquare,
+  FolderKanban,
   Handshake,
   Home,
   LayoutTemplate,
   Moon,
+  Pencil,
+  Plus,
   Search,
   Settings,
   ShieldCheck,
   Square,
   Sun,
+  Trash2,
   Video,
 } from "lucide-react";
-import type { Meeting, View } from "../lib/types";
+import { useState } from "react";
+import type { Meeting, Project, View } from "../lib/types";
 import { AvatarStack } from "./Avatar";
 
 interface Props {
   meetings: Meeting[];
+  projects: Project[];
+  activeProject: string | null;
+  onSelectProject: (id: string | null) => void;
+  onCreateProject: (name: string) => void;
+  onRenameProject: (id: string, name: string) => void;
+  onDeleteProject: (id: string) => void;
   view: View;
   onNavigate: (v: View) => void;
   onOpenSearch: () => void;
@@ -28,8 +39,7 @@ interface Props {
 
 function groupLabel(iso: string) {
   const d = new Date(iso);
-  const today = new Date("2026-07-19T12:00:00");
-  const diff = Math.floor((today.getTime() - d.getTime()) / 86400000);
+  const diff = Math.floor((Date.now() - d.getTime()) / 86400000);
   if (diff <= 0) return "Today";
   if (diff === 1) return "Yesterday";
   if (diff < 7) return "This week";
@@ -37,6 +47,21 @@ function groupLabel(iso: string) {
 }
 
 export function Sidebar(p: Props) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [renaming, setRenaming] = useState<string | null>(null);
+
+  const commitDraft = () => {
+    const name = draft.trim();
+    if (name) {
+      if (renaming) p.onRenameProject(renaming, name);
+      else p.onCreateProject(name);
+    }
+    setAdding(false);
+    setRenaming(null);
+    setDraft("");
+  };
+
   const groups: Record<string, Meeting[]> = {};
   [...p.meetings]
     .sort((a, b) => +new Date(b.date) - +new Date(a.date))
@@ -158,6 +183,116 @@ export function Sidebar(p: Props) {
           () => p.onNavigate({ kind: "settings" }),
         )}
       </nav>
+
+      {/* projects */}
+      <div className="px-3 pt-3">
+        <div className="flex items-center px-2.5 pb-1">
+          <span className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <FolderKanban size={12} /> Projects
+          </span>
+          <button
+            onClick={() => {
+              setAdding(true);
+              setRenaming(null);
+              setDraft("");
+            }}
+            className="ml-auto rounded p-0.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+            title="New project"
+          >
+            <Plus size={13} />
+          </button>
+        </div>
+        <div className="space-y-0.5">
+          {p.projects.length > 0 && (
+            <button
+              onClick={() => p.onSelectProject(null)}
+              className={`flex w-full items-center rounded-lg px-2.5 py-1 text-[12.5px] transition-colors ${
+                p.activeProject === null
+                  ? "bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60"
+              }`}
+            >
+              All meetings
+            </button>
+          )}
+          {p.projects.map((pr) =>
+            renaming === pr.id ? (
+              <input
+                key={pr.id}
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commitDraft}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitDraft();
+                  if (e.key === "Escape") {
+                    setRenaming(null);
+                    setDraft("");
+                  }
+                }}
+                className="w-full rounded-lg border border-sidebar-border bg-background px-2.5 py-1 text-[12.5px] outline-none"
+              />
+            ) : (
+              <div
+                key={pr.id}
+                className={`group flex w-full items-center gap-1 rounded-lg px-2.5 py-1 text-[12.5px] transition-colors ${
+                  p.activeProject === pr.id
+                    ? "bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60"
+                }`}
+              >
+                <button
+                  onClick={() => p.onSelectProject(p.activeProject === pr.id ? null : pr.id)}
+                  className="flex-1 truncate text-left"
+                >
+                  {pr.name}
+                </button>
+                <span className="text-[10.5px] text-muted-foreground">{pr.meetingCount}</span>
+                <button
+                  onClick={() => {
+                    setRenaming(pr.id);
+                    setAdding(false);
+                    setDraft(pr.name);
+                  }}
+                  className="hidden rounded p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+                  title="Rename project"
+                >
+                  <Pencil size={11} />
+                </button>
+                <button
+                  onClick={() => p.onDeleteProject(pr.id)}
+                  className="hidden rounded p-0.5 text-muted-foreground hover:text-destructive group-hover:block"
+                  title="Delete project (meetings are kept)"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ),
+          )}
+          {adding && (
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitDraft}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitDraft();
+                if (e.key === "Escape") {
+                  setAdding(false);
+                  setDraft("");
+                }
+              }}
+              placeholder="Project name…"
+              className="w-full rounded-lg border border-sidebar-border bg-background px-2.5 py-1 text-[12.5px] outline-none placeholder:text-muted-foreground/60"
+            />
+          )}
+          {p.projects.length === 0 && !adding && (
+            <p className="px-2.5 text-[11px] text-muted-foreground/70">
+              No projects yet — group meetings with +
+            </p>
+          )}
+        </div>
+      </div>
 
       {/* meeting list */}
       <div className="scrollbar-thin flex-1 overflow-y-auto px-3 pb-2">

@@ -14,11 +14,13 @@ import { useEffect, useRef, useState } from "react";
 import { ACTION_ITEMS, PEOPLE } from "../lib/data";
 import { getBackend } from "../lib/backend";
 import { fmtTs } from "../hooks/useLiveSession";
-import type { ActionItem, ChatMessage, Meeting } from "../lib/types";
+import type { ActionItem, ChatMessage, Meeting, Person, Project } from "../lib/types";
 import { Avatar, AvatarStack } from "./Avatar";
 
 interface Props {
   meeting: Meeting;
+  projects?: Project[];
+  onSetProject?: (projectId: string | null) => void;
   onToggleAction: (id: string, done: boolean) => void;
   askFn?: (q: string) => Promise<string>;
 }
@@ -49,10 +51,10 @@ const CANNED: { match: RegExp; answer: string }[] = [
 const FALLBACK =
   "I searched the local index of all 4 meetings. The strongest matches are in “Aurora — Q3 launch plan” and the Vesper discovery call — try asking about the **bundle budget**, **motion spec**, **open risks**, or **Vesper's compliance requirements**.";
 
-export function NoteView({ meeting, onToggleAction, askFn }: Props) {
+export function NoteView({ meeting, projects, onSetProject, onToggleAction, askFn }: Props) {
   const [tab, setTab] = useState<"notes" | "transcript">("notes");
   const [items, setItems] = useState<ActionItem[]>(() =>
-    ACTION_ITEMS.filter((a) => a.meetingId === meeting.id),
+    getBackend().mode === "tauri" ? [] : ACTION_ITEMS.filter((a) => a.meetingId === meeting.id),
   );
   const [chat, setChat] = useState<ChatMessage[]>([
     {
@@ -146,6 +148,24 @@ export function NoteView({ meeting, onToggleAction, askFn }: Props) {
             <span className="rounded-full bg-secondary px-2 py-0.5 text-[10.5px] font-semibold text-secondary-foreground">
               {meeting.template}
             </span>
+            {projects && onSetProject && (
+              <>
+                <span>·</span>
+                <select
+                  value={meeting.projectId ?? ""}
+                  onChange={(e) => onSetProject(e.target.value || null)}
+                  className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10.5px] font-semibold text-secondary-foreground outline-none"
+                  title="Assign to project"
+                >
+                  <option value="">No project</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
             <span className="ml-auto flex items-center gap-1">
               <button className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary hover:text-accent" title="Star">
                 <Star size={15} className={meeting.starred ? "fill-accent text-accent" : ""} />
@@ -277,7 +297,14 @@ export function NoteView({ meeting, onToggleAction, askFn }: Props) {
                 Transcribed on-device with Whisper Large v3 Turbo · speaker labels by local diarization · 99 languages
               </div>
               {meeting.transcript.map((t) => {
-                const sp = PEOPLE[t.speakerId];
+                const sp: Person =
+                  meeting.participants.find((p) => p.id === t.speakerId) ??
+                  PEOPLE[t.speakerId] ?? {
+                    id: t.speakerId,
+                    name: t.speakerId,
+                    initials: "?",
+                    color: "#8A8A8A",
+                  };
                 return (
                   <div key={t.id} className="group flex gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-card">
                     <button className="font-mono2 mt-1 h-fit shrink-0 text-[11px] text-muted-foreground group-hover:text-primary">

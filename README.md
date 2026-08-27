@@ -33,6 +33,39 @@ yourself in about 40 lines of source.
 
 > *Granola's workflow, everyone's source code. Your meetings stay yours.*
 
+## Status of this fork
+
+**This fork ([jantomec/open-granola](https://github.com/jantomec/open-granola)) is the version that
+actually builds and runs.** The repository it was forked from was scaffolded but never compiled —
+the Rust backend had 111 compile errors, the icon set and Tauri CLI were missing, and the lockfile
+pointed at a dead registry mirror. As of August 2026 this fork:
+
+- **builds and runs on macOS** (Apple Silicon, Metal); CUDA is enabled only for Linux/Windows targets
+- **never loses a recording** — the transcript is persisted to SQLite *before* the LLM runs;
+  a failed enhancement leaves a raw timestamped note instead of silently discarding the meeting
+- **has real speaker diarization** — NeMo TitaNet-small embeddings via sherpa-onnx, clustered
+  online, replacing a placeholder heuristic
+- **has projects** — create/rename/delete in the sidebar, assign meetings, filter the library
+- **shows your real library** — the bundled sample data is used only by the in-browser demo
+
+### Known gaps (inherited, not yet fixed)
+
+- **System-audio loopback is a stub** — only the microphone is captured, so remote participants
+  are heard only if they play through your speakers. The per-platform loopback code in
+  `src-tauri/src/audio/loopback.rs` is skeleton-only.
+- **In-app model download is not implemented** — the Download buttons in Settings are inert.
+  Place model files manually in `~/Library/Application Support/app.opengranola/library/models/`:
+
+  | File name (must match exactly) | Model | Source |
+  |---|---|---|
+  | `whisper-large-v3-turbo.bin` | Whisper Large v3 Turbo (ggml) | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) |
+  | `qwen3-4b-q4.gguf` | Qwen3-4B Q4_K_M | [Qwen/Qwen3-4B-GGUF](https://huggingface.co/Qwen/Qwen3-4B-GGUF) |
+  | `nomic-embed-v1.5.gguf` | Nomic Embed v1.5 | [nomic-ai/nomic-embed-text-v1.5-GGUF](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) |
+  | `speaker-embed.onnx` | NeMo TitaNet-small | [sherpa-onnx speaker models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) (`nemo_en_titanet_small.onnx`) |
+
+- The Parakeet and Llama 8B entries in Settings are display-only; the backend loads the
+  fixed filenames above.
+
 ## Why Open Granola
 
 Granola proved that bot-free capture is the right idea. It also uploads your audio, trains on your

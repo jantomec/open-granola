@@ -57,11 +57,8 @@ pointed at a dead registry mirror. As of August 2026 this fork:
   in `src-tauri/src/audio/loopback.rs` are still stubs, so on those platforms remote
   participants are heard only if they play through your speakers.
 - **In-app model download is not implemented** — the Download buttons in Settings are inert.
-  Place model files manually in the library folder (launch the app once so it exists):
-  - release build (sandboxed):
-    `~/Library/Containers/app.opengranola/Data/Library/Application Support/app.opengranola/library/models/`
-  - dev build (unsigned, `npm run tauri dev`):
-    `~/Library/Application Support/app.opengranola/library/models/`
+  Place model files manually in `~/Library/Application Support/app.opengranola/library/models/`
+  (launch the app once so the folder exists):
 
   | File name (must match exactly) | Model | Source |
   |---|---|---|
@@ -110,7 +107,7 @@ removes the business model:
 - 📥 **Importer** — migrate from a Granola JSON export in one click. (Otter, Fireflies and read.ai importers: planned.)
 - 📅 **Calendar-aware** — reads your local calendar (EventKit / ICS / CalDAV cache) to auto-title notes and prompt capture. Google and Outlook treated equally — no account needed.
 - 🗂️ **Templates** — product sync, 1:1, sales discovery, interview, standup, board update — or your own Markdown.
-- 🔐 **Airlock** — one build flag removes the network stack; the macOS sandbox additionally denies outbound sockets below the process. See [`src-tauri/src/airlock.rs`](src-tauri/src/airlock.rs).
+- 🔐 **Airlock** — no network stack in the binary; on macOS a seatbelt profile additionally denies outbound sockets below the process. See [`src-tauri/src/airlock.rs`](src-tauri/src/airlock.rs).
 - 🗑️ **Real deletion** — audio lives only in RAM and dies at transcription; retention auto-purge *shreds* notes, transcripts and embeddings (with `VACUUM`, so it's physical); one-click purge zero-fills the database file before unlinking it.
 
 ## Install

@@ -11,7 +11,7 @@
 //! RETENTION: samples live in heap buffers only. Unless the user enables
 //! "keep raw audio", nothing in this module ever touches the disk.
 
-mod loopback;
+pub mod loopback;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -25,7 +25,7 @@ pub const WHISPER_RATE: usize = 16_000;
 
 /// Both capture callbacks (mic + loopback) feed the same single-producer ring
 /// buffer, so the producer half lives behind a mutex they share.
-pub(crate) type SharedProducer = Arc<Mutex<ringbuf::HeapProd<f32>>>;
+pub type SharedProducer = Arc<Mutex<ringbuf::HeapProd<f32>>>;
 
 /// One capture session = one meeting.
 ///

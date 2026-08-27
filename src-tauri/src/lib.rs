@@ -10,7 +10,7 @@
 //! 4. The user can delete everything, truly, with one call: `storage::purge_all`.
 
 mod airlock;
-mod audio;
+pub mod audio;
 mod calendar;
 mod commands;
 pub mod diarize;

@@ -25,7 +25,8 @@
 
 ## Data flow for one meeting
 
-1. **Capture.** Mic (cpal) and system loopback are mixed, resampled to 16 kHz mono with rubato, and
+1. **Capture.** Mic (cpal) and system loopback (macOS 14.4+ process tap today; WASAPI and
+   PipeWire backends still stubs) are mixed, resampled to 16 kHz mono with rubato, and
    pushed into a lock-free ring buffer sized for 4 minutes (drained continuously, so steady-state
    usage is ~2 seconds of audio ≈ 64 kB). **Audio never touches disk in default mode.**
 2. **Transcribe.** A worker drains the buffer in 2 s windows / 500 ms stride through whisper.cpp.

@@ -41,6 +41,9 @@ the Rust backend had 111 compile errors, the icon set and Tauri CLI were missing
 pointed at a dead registry mirror. As of August 2026 this fork:
 
 - **builds and runs on macOS** (Apple Silicon, Metal); CUDA is enabled only for Linux/Windows targets
+- **captures system audio on macOS** — remote participants are recorded via a Core Audio
+  process tap (macOS 14.4+; grant "System Audio Recording" when first prompted), no bot,
+  no virtual driver
 - **never loses a recording** — the transcript is persisted to SQLite *before* the LLM runs;
   a failed enhancement leaves a raw timestamped note instead of silently discarding the meeting
 - **has real speaker diarization** — NeMo TitaNet-small embeddings via sherpa-onnx, clustered
@@ -50,9 +53,9 @@ pointed at a dead registry mirror. As of August 2026 this fork:
 
 ### Known gaps (inherited, not yet fixed)
 
-- **System-audio loopback is a stub** — only the microphone is captured, so remote participants
-  are heard only if they play through your speakers. The per-platform loopback code in
-  `src-tauri/src/audio/loopback.rs` is skeleton-only.
+- **System-audio loopback is macOS-only** — the WASAPI (Windows) and PipeWire (Linux) backends
+  in `src-tauri/src/audio/loopback.rs` are still stubs, so on those platforms remote
+  participants are heard only if they play through your speakers.
 - **In-app model download is not implemented** — the Download buttons in Settings are inert.
   Place model files manually in `~/Library/Application Support/app.opengranola/library/models/`:
 
@@ -92,7 +95,7 @@ removes the business model:
 
 ## Features
 
-- 🎙️ **Bot-free capture** — nobody in the call sees anything. Today this means microphone capture; per-platform system-audio loopback (CoreAudio process-tap / WASAPI / PipeWire) is in progress — see [Known gaps](#known-gaps-inherited-not-yet-fixed).
+- 🎙️ **Bot-free capture** — mic + system audio, nobody in the call sees anything. System audio comes from a Core Audio process tap on macOS 14.4+; the Windows (WASAPI) and Linux (PipeWire) backends are still stubs — see [Known gaps](#known-gaps-inherited-not-yet-fixed).
 - ⚡ **Streaming on-device transcription** — Whisper Large v3 Turbo, 99 languages, with custom vocabulary for your names, numbers and jargon. (NVIDIA Parakeet: planned.)
 - 🧠 **Local AI notes** — an embedded GGUF model (Qwen3-4B default) writes the summary, chapters, decisions and action items with owners and due dates the moment you stop.
 - 💡 **Live assist** — during the meeting, a private panel surfaces recall from past notes, relevant facts, and suggested follow-up questions. Only you see it.
@@ -159,7 +162,8 @@ Full details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [x] Live assist (recall, facts, follow-ups)
 - [x] Pre-meeting Briefs + cross-meeting commitment ledger
 - [x] Recipes + Granola JSON importer
-- [ ] System-audio loopback (macOS process-tap first, then WASAPI / PipeWire)
+- [x] System-audio loopback on macOS (Core Audio process tap, 14.4+)
+- [ ] System-audio loopback on Windows (WASAPI) and Linux (PipeWire)
 - [ ] In-app model download
 - [ ] Otter / Fireflies / read.ai importers
 - [ ] Action-item export (Markdown, Obsidian vault, clipboard)

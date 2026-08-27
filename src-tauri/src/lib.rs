@@ -64,6 +64,23 @@ pub fn run() {
             }));
             Ok(())
         })
+        // macOS convention: the red button closes the window, the app stays
+        // in the Dock, and clicking the Dock icon brings the window back.
+        // Without this pair of handlers, closing destroyed the main window
+        // while the hidden capture window kept the app alive — so a Dock
+        // click had nothing left to reopen and did nothing.
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    log::info!("main window close → hiding; Dock icon reopens it");
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             commands::start_capture,
             commands::stop_capture_and_enhance,
@@ -93,6 +110,19 @@ pub fn run() {
             commands::run_recipe,
             commands::import_granola_export,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running open-granola");
+        .build(tauri::generate_context!())
+        .expect("error while running open-granola")
+        .run(|app, event| {
+            // Dock icon clicked (macOS "reopen"): surface the main window.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                log::info!("reopen event → showing main window");
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

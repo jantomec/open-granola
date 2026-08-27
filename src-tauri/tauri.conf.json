@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Open Granola",
@@ -49,11 +50,7 @@
     "longDescription": "Open Granola captures meetings without a bot, transcribes on-device with Whisper, and enhances notes with a local LLM. No cloud, no accounts, no data retention.",
     "macOS": {
       "entitlements": "entitlements.plist",
-      "minimumSystemVersion": "14.4",
-      "info": {
-        "NSMicrophoneUsageDescription": "Open Granola captures your microphone to transcribe meetings on-device. Audio is never uploaded or stored by default.",
-        "NSSystemAudioUsageDescription": "Open Granola captures system audio to transcribe meetings on-device. Audio is never uploaded or stored by default."
-      }
+      "minimumSystemVersion": "14.4"
     },
     "windows": {
       "certificateThumbprint": null,

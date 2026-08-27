@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Open Granola captures your microphone to transcribe meetings on-device. Audio is never uploaded or stored by default.</string>
+	<key>NSSystemAudioUsageDescription</key>
+	<string>Open Granola captures system audio to transcribe meetings on-device. Audio is never uploaded or stored by default.</string>
+</dict>
+</plist>

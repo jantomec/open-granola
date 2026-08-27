@@ -331,6 +331,59 @@ pub async fn set_meeting_project(
     Ok(())
 }
 
+/// Rename a meeting. The sidebar row and the note header render the same DB
+/// column, so this one UPDATE is the single source of truth for both.
+#[tauri::command]
+pub async fn rename_meeting(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("meeting title is empty".into());
+    }
+    let n = state
+        .db
+        .lock()
+        .conn()
+        .execute("UPDATE meetings SET title=?1 WHERE id=?2", rusqlite::params![title, id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("no such meeting".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    delete_meeting_rows(&state.db.lock(), &id).map_err(|e| e.to_string())
+}
+
+/// Delete one meeting and everything derived from it. The schema declares
+/// ON DELETE CASCADE, but foreign-key enforcement is never turned on for
+/// this connection, so the cleanup is explicit — the same approach as
+/// `storage::purge_all`. FTS rows go first: an external-content FTS5 table
+/// can only un-index rows whose source rows still exist.
+fn delete_meeting_rows(db: &Db, id: &str) -> anyhow::Result<()> {
+    let conn = db.conn();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM segments_fts WHERE rowid IN (SELECT rowid FROM segments WHERE meeting_id=?1)",
+        [id],
+    )?;
+    tx.execute(
+        "DELETE FROM embeddings WHERE segment_id IN (SELECT id FROM segments WHERE meeting_id=?1)",
+        [id],
+    )?;
+    tx.execute("DELETE FROM segments WHERE meeting_id=?1", [id])?;
+    tx.execute("DELETE FROM action_items WHERE meeting_id=?1", [id])?;
+    tx.execute("DELETE FROM commitments WHERE meeting_id=?1", [id])?;
+    tx.execute("DELETE FROM meetings WHERE id=?1", [id])?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ask_library(
     state: State<'_, Arc<AppState>>,
@@ -580,6 +633,63 @@ mod tests {
         let actions: i64 = db.conn().query_row("SELECT count(*) FROM action_items", [], |r| r.get(0)).unwrap();
         assert_eq!(title, "Upgraded title");
         assert_eq!(actions, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deleting a meeting must remove every derived row (segments, FTS,
+    /// embeddings, action items, commitments) and nothing of anyone else's.
+    #[test]
+    fn delete_meeting_removes_every_trace_and_only_its_own() {
+        let dir = std::env::temp_dir().join(format!("og-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::storage::Db::open(&dir.join("t.db")).unwrap();
+        let seg_text = |text: &str| {
+            vec![Segment { start_ms: 0, end_ms: 1500, speaker: 0, text: text.into(), final_: true }]
+        };
+        persist_raw_meeting(&db, "m1", "Doomed", &seg_text("ephemeral banana")).unwrap();
+        persist_raw_meeting(&db, "m2", "Survivor", &seg_text("durable coconut")).unwrap();
+        // Derived rows in every table that references m1, plus FTS for both.
+        let conn = db.conn();
+        conn.execute("INSERT INTO action_items(id,meeting_id,text) VALUES('a1','m1','x')", []).unwrap();
+        conn.execute(
+            "INSERT INTO commitments(id,meeting_id,text,made_on) VALUES('c1','m1','x',date('now'))",
+            [],
+        ).unwrap();
+        let seg: String = conn
+            .query_row("SELECT id FROM segments WHERE meeting_id='m1'", [], |r| r.get(0))
+            .unwrap();
+        conn.execute("INSERT INTO embeddings(segment_id,vector) VALUES(?1, x'00000000')", [&seg]).unwrap();
+        conn.execute("INSERT INTO segments_fts(rowid, text) SELECT rowid, text FROM segments", [])
+            .unwrap();
+
+        delete_meeting_rows(&db, "m1").unwrap();
+
+        for (table, expected) in
+            [("meetings", 1), ("segments", 1), ("action_items", 0), ("commitments", 0), ("embeddings", 0)]
+        {
+            let n: i64 = db
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, expected, "{table} after delete");
+        }
+        // count(*) on an external-content FTS table proxies to the content
+        // table, so probe the index itself with MATCH: the deleted meeting's
+        // tokens must be gone, the survivor's still findable.
+        let fts = |term: &str| -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT count(*) FROM segments_fts WHERE segments_fts MATCH ?1",
+                    [term],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(fts("banana"), 0, "deleted meeting still in the FTS index");
+        assert_eq!(fts("coconut"), 1, "survivor fell out of the FTS index");
+        let survivor: String =
+            db.conn().query_row("SELECT title FROM meetings", [], |r| r.get(0)).unwrap();
+        assert_eq!(survivor, "Survivor");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

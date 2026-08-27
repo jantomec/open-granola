@@ -44,6 +44,8 @@ export interface Backend {
   renameProject(id: string, name: string): Promise<void>;
   deleteProject(id: string): Promise<void>;
   setMeetingProject(meetingId: string, projectId: string | null): Promise<void>;
+  renameMeeting(id: string, title: string): Promise<void>;
+  deleteMeeting(id: string): Promise<void>;
   getBrief(): Promise<Brief | null>;
   listCommitments(): Promise<Commitment[]>;
   markCommitment(id: string, status: "open" | "kept"): Promise<void>;
@@ -84,6 +86,8 @@ const demoBackend: Backend = {
   setMeetingProject: async () => {},
   getBrief: async () => BRIEF,
   listCommitments: async () => COMMITMENTS,
+  renameMeeting: async () => {}, // demo: App updates its local state
+  deleteMeeting: async () => {}, // demo: App updates its local state
   markCommitment: async () => {},
   runRecipe: async () =>
     "Demo mode: recipes run against the on-device model in the desktop app. Copy the prompt and it will execute locally over your real library.",
@@ -315,6 +319,8 @@ const tauriBackend: Backend = {
     }));
   },
 
+  renameMeeting: (id, title) => tauriInvoke("rename_meeting", { id, title }),
+  deleteMeeting: (id) => tauriInvoke("delete_meeting", { id }),
   markCommitment: (id, status) => tauriInvoke("mark_commitment", { id, status }),
 
   runRecipe: (prompt, meetingId) => tauriInvoke("run_recipe", { prompt, meetingId: meetingId ?? null }),

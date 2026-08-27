@@ -224,7 +224,7 @@ export function SettingsView() {
         </section>
 
         <p className="text-center font-mono2 text-[11px] text-muted-foreground">
-          open granola 0.2.0 · apache-2.0 · built with tauri + whisper.cpp + llama.cpp
+          open granola 0.2.1 · apache-2.0 · built with tauri + whisper.cpp + llama.cpp
         </p>
       </div>
     </div>

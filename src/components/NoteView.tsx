@@ -21,6 +21,7 @@ interface Props {
   meeting: Meeting;
   projects?: Project[];
   onSetProject?: (projectId: string | null) => void;
+  onRename?: (title: string) => void;
   onToggleAction: (id: string, done: boolean) => void;
   askFn?: (q: string) => Promise<string>;
 }
@@ -51,8 +52,15 @@ const CANNED: { match: RegExp; answer: string }[] = [
 const FALLBACK =
   "I searched the local index of all 4 meetings. The strongest matches are in “Aurora — Q3 launch plan” and the Vesper discovery call — try asking about the **bundle budget**, **motion spec**, **open risks**, or **Vesper's compliance requirements**.";
 
-export function NoteView({ meeting, projects, onSetProject, onToggleAction, askFn }: Props) {
+export function NoteView({ meeting, projects, onSetProject, onRename, onToggleAction, askFn }: Props) {
   const [tab, setTab] = useState<"notes" | "transcript">("notes");
+  // null = displaying; a string = the in-progress edit of the title.
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const commitTitle = () => {
+    const t = titleDraft?.trim();
+    setTitleDraft(null);
+    if (t && t !== meeting.title) onRename?.(t);
+  };
   const [items, setItems] = useState<ActionItem[]>(() =>
     getBackend().mode === "tauri" ? [] : ACTION_ITEMS.filter((a) => a.meetingId === meeting.id),
   );
@@ -178,7 +186,27 @@ export function NoteView({ meeting, projects, onSetProject, onToggleAction, askF
               </button>
             </span>
           </div>
-          <h1 className="font-display mt-1.5 text-[30px] leading-tight">{meeting.title}</h1>
+          {titleDraft !== null ? (
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitTitle();
+                if (e.key === "Escape") setTitleDraft(null);
+              }}
+              className="font-display mt-1.5 w-full border-b border-border bg-transparent text-[30px] leading-tight outline-none"
+            />
+          ) : (
+            <h1
+              className={`font-display mt-1.5 text-[30px] leading-tight ${onRename ? "cursor-text" : ""}`}
+              title={onRename ? "Click to rename" : undefined}
+              onClick={() => onRename && setTitleDraft(meeting.title)}
+            >
+              {meeting.title}
+            </h1>
+          )}
           <div className="mt-2 flex items-center gap-3">
             <AvatarStack people={meeting.participants} max={6} />
             <span className="text-[12px] text-muted-foreground">

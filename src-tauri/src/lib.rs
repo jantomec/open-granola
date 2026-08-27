@@ -70,6 +70,8 @@ pub fn run() {
             commands::rename_project,
             commands::delete_project,
             commands::set_meeting_project,
+            commands::rename_meeting,
+            commands::delete_meeting,
             commands::ask_library,
             commands::semantic_search,
             commands::toggle_action_item,

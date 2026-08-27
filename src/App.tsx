@@ -73,6 +73,28 @@ export default function App() {
       }),
     [reloadProjects],
   );
+  const deleteMeeting = useCallback(
+    (id: string) =>
+      backend
+        .deleteMeeting(id)
+        .then(() => {
+          setMeetings((prev) => prev.filter((m) => m.id !== id));
+          setView((v) => (v.kind === "meeting" && v.id === id ? { kind: "home" } : v));
+          reloadProjects();
+        })
+        .catch((e) => console.error("delete failed:", e)),
+    [reloadProjects],
+  );
+  const renameMeeting = useCallback(
+    (id: string, title: string) =>
+      backend
+        .renameMeeting(id, title)
+        .then(() => {
+          setMeetings((prev) => prev.map((m) => (m.id === id ? { ...m, title } : m)));
+        })
+        .catch((e) => console.error("rename failed:", e)),
+    [],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -164,6 +186,8 @@ export default function App() {
         onCreateProject={createProject}
         onRenameProject={renameProject}
         onDeleteProject={deleteProject}
+        onDeleteMeeting={deleteMeeting}
+        onMoveMeeting={assignProject}
         view={view}
         onNavigate={setView}
         onOpenSearch={() => setPaletteOpen(true)}
@@ -189,6 +213,7 @@ export default function App() {
             meeting={activeMeeting}
             projects={projects}
             onSetProject={(pid) => assignProject(activeMeeting.id, pid)}
+            onRename={(title) => renameMeeting(activeMeeting.id, title)}
             onToggleAction={(id, done) => backend.toggleAction(id, done)}
             askFn={backend.mode === "tauri" ? (q) => backend.ask(q, activeMeeting.id) : undefined}
           />

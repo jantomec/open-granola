@@ -15,9 +15,19 @@ import {
   Trash2,
   Video,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Meeting, Project, View } from "../lib/types";
 import { AvatarStack } from "./Avatar";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "./ui/context-menu";
 
 interface Props {
   meetings: Meeting[];
@@ -27,6 +37,8 @@ interface Props {
   onCreateProject: (name: string) => void;
   onRenameProject: (id: string, name: string) => void;
   onDeleteProject: (id: string) => void;
+  onDeleteMeeting: (id: string) => void;
+  onMoveMeeting: (meetingId: string, projectId: string | null) => void;
   view: View;
   onNavigate: (v: View) => void;
   onOpenSearch: () => void;
@@ -50,6 +62,23 @@ export function Sidebar(p: Props) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
+  // Swipe-to-delete: id of the row whose red Delete button is revealed.
+  const [swiped, setSwiped] = useState<string | null>(null);
+  const wheelAccum = useRef(0);
+
+  // Trackpad swipe (horizontal two-finger scroll) on a meeting row, macOS
+  // list style: swipe left reveals Delete, swipe right tucks it away again.
+  const rowWheel = (id: string) => (e: React.WheelEvent) => {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return; // vertical = list scroll
+    wheelAccum.current += e.deltaX;
+    if (wheelAccum.current > 24) {
+      setSwiped(id);
+      wheelAccum.current = 0;
+    } else if (wheelAccum.current < -24) {
+      setSwiped((s) => (s === id ? null : s));
+      wheelAccum.current = 0;
+    }
+  };
 
   const commitDraft = () => {
     const name = draft.trim();
@@ -304,24 +333,78 @@ export function Sidebar(p: Props) {
             </div>
             <div className="space-y-0.5">
               {ms.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => p.onNavigate({ kind: "meeting", id: m.id })}
-                  className={`w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
-                    selId === m.id
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "hover:bg-sidebar-accent/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[13px] font-medium">{m.title}</span>
-                    {m.starred && <span className="text-accent">★</span>}
-                  </div>
-                  <div className="mt-1 flex items-center justify-between">
-                    <AvatarStack people={m.participants} max={3} />
-                    <span className="text-[10.5px] text-muted-foreground">{m.durationMin}m</span>
-                  </div>
-                </button>
+                <ContextMenu key={m.id}>
+                  <ContextMenuTrigger asChild>
+                    <div className="relative overflow-hidden rounded-lg" onWheel={rowWheel(m.id)}>
+                      <button
+                        onClick={() => {
+                          if (swiped === m.id) {
+                            setSwiped(null); // tap closes the revealed button
+                            return;
+                          }
+                          setSwiped(null);
+                          p.onNavigate({ kind: "meeting", id: m.id });
+                        }}
+                        className={`w-full rounded-lg px-2.5 py-2 text-left transition-all duration-200 ${
+                          swiped === m.id ? "-translate-x-16" : ""
+                        } ${
+                          selId === m.id
+                            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                            : "hover:bg-sidebar-accent/60"
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-[13px] font-medium">{m.title}</span>
+                          {m.starred && <span className="text-accent">★</span>}
+                        </div>
+                        <div className="mt-1 flex items-center justify-between">
+                          <AvatarStack people={m.participants} max={3} />
+                          <span className="text-[10.5px] text-muted-foreground">{m.durationMin}m</span>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSwiped(null);
+                          p.onDeleteMeeting(m.id);
+                        }}
+                        className={`absolute inset-y-0 right-0 flex w-16 items-center justify-center bg-destructive text-[12px] font-semibold text-destructive-foreground transition-transform duration-200 ${
+                          swiped === m.id ? "translate-x-0" : "translate-x-full"
+                        }`}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuSub>
+                      <ContextMenuSubTrigger>Move to project</ContextMenuSubTrigger>
+                      <ContextMenuSubContent>
+                        {p.projects.map((pr) => (
+                          <ContextMenuItem
+                            key={pr.id}
+                            disabled={m.projectId === pr.id}
+                            onSelect={() => p.onMoveMeeting(m.id, pr.id)}
+                          >
+                            {pr.name}
+                          </ContextMenuItem>
+                        ))}
+                        {p.projects.length > 0 && m.projectId && <ContextMenuSeparator />}
+                        {m.projectId && (
+                          <ContextMenuItem onSelect={() => p.onMoveMeeting(m.id, null)}>
+                            Remove from project
+                          </ContextMenuItem>
+                        )}
+                        {p.projects.length === 0 && !m.projectId && (
+                          <ContextMenuItem disabled>No projects yet</ContextMenuItem>
+                        )}
+                      </ContextMenuSubContent>
+                    </ContextMenuSub>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem variant="destructive" onSelect={() => p.onDeleteMeeting(m.id)}>
+                      <Trash2 size={13} /> Delete meeting
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               ))}
             </div>
           </div>

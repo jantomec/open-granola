@@ -15,6 +15,7 @@ mod loopback;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use parking_lot::Mutex;
 use ringbuf::{traits::*, HeapRb};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,78 +23,124 @@ use std::time::Instant;
 
 pub const WHISPER_RATE: usize = 16_000;
 
+/// Both capture callbacks (mic + loopback) feed the same single-producer ring
+/// buffer, so the producer half lives behind a mutex they share.
+pub(crate) type SharedProducer = Arc<Mutex<ringbuf::HeapProd<f32>>>;
+
 /// One capture session = one meeting.
+///
+/// cpal streams are not `Send`, so a dedicated thread owns them for the whole
+/// session; the session itself holds only the stop flag and thread handle,
+/// which keeps `AppState` usable from Tauri's async commands.
 pub struct CaptureSession {
     pub started: Instant,
     pub meeting_hint: Option<String>, // from local calendar, if matched
-    producer: ringbuf::HeapProd<f32>,
     stop_flag: Arc<AtomicBool>,
-    _mic_stream: cpal::Stream,
-    _sys_stream: Box<dyn std::any::Any + Send>, // platform loopback handle
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CaptureSession {
     /// Begin capturing mic + system audio. Returns the session (owns the
-    /// streams) and a consumer the transcription worker drains.
+    /// capture thread) and a consumer the transcription worker drains.
     pub fn begin(meeting_hint: Option<String>) -> Result<(Self, ringbuf::HeapCons<f32>)> {
         let rb = HeapRb::<f32>::new(WHISPER_RATE * 60 * 4); // 4 min headroom; drained continuously
-        let (mut producer, consumer) = rb.split();
+        let (producer, consumer) = rb.split();
+        let producer: SharedProducer = Arc::new(Mutex::new(producer));
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        // --- mic chain ---
-        let host = cpal::default_host();
-        let mic = host.default_input_device().context("no input device")?;
-        let cfg = mic.default_input_config()?;
-        let rate = cfg.sample_rate().0 as usize;
-        let channels = cfg.channels() as usize;
-        let mut resampler = rubato::FftFixedIn::<f32>::new(rate, WHISPER_RATE, 1024, 2, 1)?;
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let stop = stop_flag.clone();
-        let mic_producer = producer.clone();
-        let mic_stream = mic.build_input_stream(
-            &cfg.into(),
-            move |data: &[f32], _| {
-                if stop.load(Ordering::Relaxed) {
-                    return;
+        let worker = std::thread::spawn(move || match build_streams(producer, stop.clone()) {
+            Ok(streams) => {
+                let _ = ready_tx.send(Ok(()));
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                let mono: Vec<f32> = data
-                    .chunks(channels.max(1))
-                    .map(|f| f.iter().sum::<f32>() / channels.max(1) as f32)
-                    .collect();
-                if let Ok(out) = resampler.process(&[mono], None) {
-                    let _ = mic_producer.try_push_slice(&out[0]); // drop on overflow, never block
-                }
-            },
-            |e| log::error!("mic stream error: {e}"),
-            None,
-        )?;
-        mic_stream.play()?;
-
-        // --- system loopback chain (platform-specific, see loopback.rs) ---
-        let sys = loopback::start(producer.clone(), stop_flag.clone())?;
+                drop(streams); // audio ceases to exist
+            }
+            Err(e) => {
+                let _ = ready_tx.send(Err(e));
+            }
+        });
+        ready_rx
+            .recv()
+            .context("capture thread exited during setup")??;
 
         Ok((
             Self {
                 started: Instant::now(),
                 meeting_hint,
-                producer,
                 stop_flag,
-                _mic_stream: mic_stream,
-                _sys_stream: sys,
+                worker: Some(worker),
             },
             consumer,
         ))
     }
 
     /// Stop both streams. Buffers are dropped here — audio ceases to exist.
-    pub fn finish(self) {
+    pub fn finish(mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        drop(self._mic_stream);
-        drop(self._sys_stream);
-        log::info!("capture stopped after {:?}; audio buffers dropped", self.started.elapsed());
+        if let Some(w) = self.worker.take() {
+            let _ = w.join();
+        }
+        log::info!(
+            "capture stopped after {:?}; audio buffers dropped",
+            self.started.elapsed()
+        );
     }
+}
 
-    /// Push any final samples the loopback driver had queued.
-    pub fn drain_tail(&mut self) {
-        let _ = &mut self.producer; // tail drain happens in consumer before finish()
+impl Drop for CaptureSession {
+    fn drop(&mut self) {
+        // A session dropped without finish() must still release the streams.
+        self.stop_flag.store(true, Ordering::Relaxed);
     }
+}
+
+/// Built and owned by the capture thread — cpal streams must not cross threads.
+fn build_streams(
+    producer: SharedProducer,
+    stop: Arc<AtomicBool>,
+) -> Result<(cpal::Stream, Box<dyn std::any::Any>)> {
+    use rubato::Resampler;
+
+    // --- mic chain ---
+    let host = cpal::default_host();
+    let mic = host.default_input_device().context("no input device")?;
+    let cfg = mic.default_input_config()?;
+    let rate = cfg.sample_rate().0 as usize;
+    let channels = cfg.channels() as usize;
+
+    const CHUNK: usize = 1024;
+    let mut resampler = rubato::FftFixedIn::<f32>::new(rate, WHISPER_RATE, CHUNK, 2, 1)?;
+    let mic_producer = producer.clone();
+    let mic_stop = stop.clone();
+    // The resampler takes fixed-size frames; carry the remainder across callbacks.
+    let mut pending: Vec<f32> = Vec::with_capacity(CHUNK * 4);
+    let mic_stream = mic.build_input_stream(
+        &cfg.into(),
+        move |data: &[f32], _| {
+            if mic_stop.load(Ordering::Relaxed) {
+                return;
+            }
+            pending.extend(
+                data.chunks(channels.max(1))
+                    .map(|f| f.iter().sum::<f32>() / channels.max(1) as f32),
+            );
+            while pending.len() >= CHUNK {
+                let frame: Vec<f32> = pending.drain(..CHUNK).collect();
+                if let Ok(out) = resampler.process(&[frame], None) {
+                    let _ = mic_producer.lock().push_slice(&out[0]); // drop on overflow, never block
+                }
+            }
+        },
+        |e| log::error!("mic stream error: {e}"),
+        None,
+    )?;
+    mic_stream.play()?;
+
+    // --- system loopback chain (platform-specific, see loopback.rs) ---
+    let sys = loopback::start(producer, stop)?;
+
+    Ok((mic_stream, sys))
 }

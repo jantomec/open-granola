@@ -34,7 +34,8 @@ ringbuf = "0.4"
 
 # --- on-device inference ---
 whisper-rs = { version = "0.13", features = ["raw-api"] }   # whisper.cpp bindings
-llama-cpp-2 = { version = "0.1", features = ["cuda", "metal"] }  # local LLM
+llama-cpp-2 = { version = "0.1" }  # local LLM; GPU backends are per-target below
+sherpa-onnx = "1.13"     # speaker embeddings (TitaNet) for diarization
 # NOTE: there is deliberately NO http client anywhere in this tree.
 # Airlock is architectural: open-granola physically cannot make network calls.
 
@@ -54,16 +55,24 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 sha2 = "0.10"            # integrity manifests for the audit export
 
+[dev-dependencies]
+hound = "3"              # WAV loading for the diarization check example
+
 [target."cfg(target_os = \"macos\")".dependencies]
+llama-cpp-2 = { version = "0.1", features = ["metal"] }
 coreaudio-rs = "0.12"    # process-tap system audio (macOS 14.4+)
 objc2 = "0.5"
 objc2-event-kit = "0.2"  # read-only local calendar
 
 [target."cfg(windows)".dependencies]
+llama-cpp-2 = { version = "0.1", features = ["cuda"] }
 windows = { version = "0.58", features = [
     "Win32_Media_Audio",   # WASAPI loopback capture
     "Win32_System_Com",
 ] }
+
+[target."cfg(target_os = \"linux\")".dependencies]
+llama-cpp-2 = { version = "0.1", features = ["cuda"] }
 
 [profile.release]
 opt-level = 3

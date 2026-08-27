@@ -2,12 +2,13 @@
 //! Each backend feeds the same 16 kHz mono ring buffer as the mic.
 
 use anyhow::Result;
-use ringbuf::HeapProd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use super::SharedProducer;
+
 #[cfg(target_os = "macos")]
-pub fn start(producer: HeapProd<f32>, stop: Arc<AtomicBool>) -> Result<Box<dyn std::any::Any + Send>> {
+pub fn start(_producer: SharedProducer, stop: Arc<AtomicBool>) -> Result<Box<dyn std::any::Any>> {
     use coreaudio::audio_unit::AudioUnit;
 
     // macOS 14.4+: AudioHardwareProcessTap captures a specific process mix
@@ -27,7 +28,7 @@ pub fn start(producer: HeapProd<f32>, stop: Arc<AtomicBool>) -> Result<Box<dyn s
 }
 
 #[cfg(windows)]
-pub fn start(producer: HeapProd<f32>, stop: Arc<AtomicBool>) -> Result<Box<dyn std::any::Any + Send>> {
+pub fn start(_producer: SharedProducer, stop: Arc<AtomicBool>) -> Result<Box<dyn std::any::Any>> {
     // WASAPI loopback: AUDCLNT_STREAMFLAGS_LOOPBACK on the default render
     // endpoint, event-driven capture on a dedicated MMCSS thread.
     let handle = std::thread::spawn(move || {
@@ -40,7 +41,7 @@ pub fn start(producer: HeapProd<f32>, stop: Arc<AtomicBool>) -> Result<Box<dyn s
 }
 
 #[cfg(target_os = "linux")]
-pub fn start(producer: HeapProd<f32>, stop: Arc<AtomicBool>) -> Result<Box<dyn std::any::Any + Send>> {
+pub fn start(_producer: SharedProducer, stop: Arc<AtomicBool>) -> Result<Box<dyn std::any::Any>> {
     // PipeWire: connect to the monitor source of the default sink.
     // pw-stream with pw_stream_connect(..., PW_DIRECTION_INPUT, monitor-of-sink ...)
     let handle = std::thread::spawn(move || {

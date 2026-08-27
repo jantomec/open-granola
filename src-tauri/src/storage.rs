@@ -66,13 +66,27 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS projects (
+    id   TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
 "#;
 
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
+        // Register sqlite-vec (vec_distance_cosine(...) for recall) before the
+        // first connection; auto_extension applies process-wide, exactly once.
+        static VEC_INIT: std::sync::Once = std::sync::Once::new();
+        VEC_INIT.call_once(|| unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        });
         let conn = Connection::open(path)?;
-        sqlite_vec::load(&conn)?; // SELECT vec_distance_cosine(...) for recall
         conn.execute_batch(SCHEMA)?;
+        // Migration for libraries created before projects existed; the ALTER
+        // fails harmlessly once the column is there.
+        let _ = conn.execute("ALTER TABLE meetings ADD COLUMN project_id TEXT", []);
         Ok(Self { conn })
     }
 

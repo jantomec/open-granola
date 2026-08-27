@@ -13,6 +13,7 @@ mod airlock;
 mod audio;
 mod calendar;
 mod commands;
+pub mod diarize;
 mod llm;
 mod storage;
 mod transcribe;
@@ -63,6 +64,12 @@ pub fn run() {
             commands::stop_capture_and_enhance,
             commands::list_meetings,
             commands::get_meeting,
+            commands::list_action_items,
+            commands::list_projects,
+            commands::create_project,
+            commands::rename_project,
+            commands::delete_project,
+            commands::set_meeting_project,
             commands::ask_library,
             commands::semantic_search,
             commands::toggle_action_item,

@@ -63,9 +63,13 @@ pub async fn start_capture(
     Ok(())
 }
 
-/// Stop capture, run enhancement, persist, and return the new meeting id.
+/// Stop capture, persist the raw transcript, then enhance in place.
 /// Audio is dropped with the session — gone, unless the user opted in to
 /// encrypted local audio retention.
+///
+/// ORDER MATTERS: the transcript is written to the database BEFORE the LLM
+/// runs. Enhancement can fail (missing model, malformed model output) and a
+/// failure there must never lose the meeting itself.
 #[tauri::command]
 pub async fn stop_capture_and_enhance(
     state: State<'_, Arc<AppState>>,
@@ -75,21 +79,38 @@ pub async fn stop_capture_and_enhance(
     if let Some(session) = state.session.lock().take() {
         session.finish(); // streams stop; ring buffer dropped here
     }
-    let note: EnhancedNote = {
+    if transcript.is_empty() {
+        return Err("nothing was transcribed — no note to save".into());
+    }
+    let id = Uuid::new_v4().to_string();
+    let fallback_title = format!("Meeting — {}", chrono::Local::now().format("%b %d, %H:%M"));
+    persist_raw_meeting(&state.db.lock(), &id, &fallback_title, &transcript)
+        .map_err(|e| e.to_string())?;
+
+    let note: Option<EnhancedNote> = {
         let mut guard = state.llm.lock();
         if guard.is_none() {
             *guard = LocalLlm::load(&state.data_dir.join("models/qwen3-4b-q4.gguf"))
                 .map_err(|e| log::error!("llm load: {e}"))
                 .ok();
         }
-        guard
-            .as_ref()
-            .ok_or("no local model installed — download one in Settings")?
-            .enhance(&transcript, &template_md)
-            .map_err(|e| e.to_string())?
+        match guard.as_ref() {
+            None => {
+                log::warn!("no local LLM — raw transcript saved without enhancement");
+                None
+            }
+            Some(llm) => match llm.enhance(&transcript, &template_md) {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    log::error!("enhancement failed, raw transcript kept: {e}");
+                    None
+                }
+            },
+        }
     };
-    let id = Uuid::new_v4().to_string();
-    persist_meeting(&state.db.lock(), &id, &note, &transcript).map_err(|e| e.to_string())?;
+    if let Some(note) = &note {
+        apply_enhancement(&state.db.lock(), &id, note).map_err(|e| e.to_string())?;
+    }
 
     // Second extraction pass: promises, offers and assignments → the ledger.
     // Runs after persist so a failure here can never lose the note itself.
@@ -108,18 +129,16 @@ pub async fn stop_capture_and_enhance(
     Ok(id)
 }
 
-fn persist_meeting(db: &Db, id: &str, note: &EnhancedNote, transcript: &[Segment]) -> anyhow::Result<()> {
+/// First write: meeting row + transcript, no LLM involved. This is the copy
+/// that must survive even when everything downstream fails.
+fn persist_raw_meeting(db: &Db, id: &str, title: &str, transcript: &[Segment]) -> anyhow::Result<()> {
     let conn = db.conn();
     conn.execute(
-        "INSERT INTO meetings(id,title,started_at,duration_s,summary,chapters_json,decisions_json)
-         VALUES(?1,?2,datetime('now'),?3,?4,?5,?6)",
+        "INSERT INTO meetings(id,title,started_at,duration_s) VALUES(?1,?2,datetime('now'),?3)",
         rusqlite::params![
             id,
-            note.title,
+            title,
             transcript.last().map(|s| s.end_ms / 1000).unwrap_or(0),
-            note.summary,
-            serde_json::to_string(&note.chapters)?,
-            serde_json::to_string(&note.decisions)?,
         ],
     )?;
     for s in transcript {
@@ -128,6 +147,22 @@ fn persist_meeting(db: &Db, id: &str, note: &EnhancedNote, transcript: &[Segment
             rusqlite::params![Uuid::new_v4().to_string(), id, s.start_ms, s.end_ms, s.speaker, s.text],
         )?;
     }
+    Ok(())
+}
+
+/// Second write: upgrade the stored note with what the LLM produced.
+fn apply_enhancement(db: &Db, id: &str, note: &EnhancedNote) -> anyhow::Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE meetings SET title=?1, summary=?2, chapters_json=?3, decisions_json=?4 WHERE id=?5",
+        rusqlite::params![
+            note.title,
+            note.summary,
+            serde_json::to_string(&note.chapters)?,
+            serde_json::to_string(&note.decisions)?,
+            id,
+        ],
+    )?;
     for a in &note.action_items {
         conn.execute(
             "INSERT INTO action_items(id,meeting_id,text,owner,due) VALUES(?1,?2,?3,?4,?5)",
@@ -160,7 +195,7 @@ pub async fn list_meetings(state: State<'_, Arc<AppState>>) -> Result<serde_json
 pub async fn get_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<serde_json::Value, String> {
     let db = state.db.lock();
     let meeting = db.conn().query_row(
-        "SELECT title,started_at,duration_s,summary,chapters_json,decisions_json,template,starred FROM meetings WHERE id=?1",
+        "SELECT title,started_at,duration_s,summary,chapters_json,decisions_json,template,starred,project_id FROM meetings WHERE id=?1",
         [&id],
         |r| {
             Ok(serde_json::json!({
@@ -168,6 +203,7 @@ pub async fn get_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<
                 "duration_s": r.get::<_,i64>(2)?, "summary": r.get::<_,Option<String>>(3)?,
                 "chapters": r.get::<_,Option<String>>(4)?, "decisions": r.get::<_,Option<String>>(5)?,
                 "template": r.get::<_,Option<String>>(6)?, "starred": r.get::<_,i64>(7)?,
+                "project_id": r.get::<_,Option<String>>(8)?,
             }))
         },
     ).map_err(|e| e.to_string())?;
@@ -208,6 +244,91 @@ pub async fn get_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<
         "segments": segments,
         "action_items": actions,
     }))
+}
+
+#[tauri::command]
+pub async fn list_action_items(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let db = state.db.lock();
+    let mut stmt = db.conn().prepare(
+        "SELECT a.id, a.text, a.owner, a.due, a.done, a.meeting_id, m.title
+         FROM action_items a JOIN meetings m ON m.id = a.meeting_id
+         ORDER BY a.done, m.started_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(serde_json::json!({
+            "id": r.get::<_,String>(0)?, "text": r.get::<_,String>(1)?,
+            "owner": r.get::<_,Option<String>>(2)?, "due": r.get::<_,Option<String>>(3)?,
+            "done": r.get::<_,i64>(4)?, "meeting_id": r.get::<_,String>(5)?,
+            "meeting_title": r.get::<_,String>(6)?,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?.into())
+}
+
+#[tauri::command]
+pub async fn list_projects(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let db = state.db.lock();
+    let mut stmt = db.conn().prepare(
+        "SELECT p.id, p.name, COUNT(m.id) FROM projects p
+         LEFT JOIN meetings m ON m.project_id = p.id
+         GROUP BY p.id ORDER BY p.name",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(serde_json::json!({
+            "id": r.get::<_,String>(0)?, "name": r.get::<_,String>(1)?,
+            "meeting_count": r.get::<_,i64>(2)?,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?.into())
+}
+
+#[tauri::command]
+pub async fn create_project(state: State<'_, Arc<AppState>>, name: String) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("project name is empty".into());
+    }
+    let id = Uuid::new_v4().to_string();
+    state.db.lock().conn()
+        .execute("INSERT INTO projects(id,name) VALUES(?1,?2)", rusqlite::params![id, name])
+        .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn rename_project(state: State<'_, Arc<AppState>>, id: String, name: String) -> Result<(), String> {
+    state.db.lock().conn()
+        .execute("UPDATE projects SET name=?1 WHERE id=?2", rusqlite::params![name.trim(), id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Deleting a project keeps its meetings — they just become unassigned.
+#[tauri::command]
+pub async fn delete_project(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let db = state.db.lock();
+    db.conn()
+        .execute("UPDATE meetings SET project_id=NULL WHERE project_id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    db.conn()
+        .execute("DELETE FROM projects WHERE id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_meeting_project(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    state.db.lock().conn()
+        .execute(
+            "UPDATE meetings SET project_id=?1 WHERE id=?2",
+            rusqlite::params![project_id, meeting_id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -419,6 +540,48 @@ pub async fn run_recipe(
         .ok_or("no local model installed".to_string())?
         .run_recipe(&prompt, &context)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The failure mode that once lost a real meeting: LLM enhancement fails
+    /// after capture. The raw transcript must already be on disk by then.
+    #[test]
+    fn transcript_survives_enhancement_failure() {
+        let dir = std::env::temp_dir().join(format!("og-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::storage::Db::open(&dir.join("t.db")).unwrap();
+        let transcript = vec![Segment {
+            start_ms: 0,
+            end_ms: 1500,
+            speaker: 0,
+            text: "hello world".into(),
+            final_: true,
+        }];
+
+        persist_raw_meeting(&db, "m1", "Meeting — test", &transcript).unwrap();
+        // Simulated enhancement failure: apply_enhancement is never called.
+        let meetings: i64 = db.conn().query_row("SELECT count(*) FROM meetings", [], |r| r.get(0)).unwrap();
+        let segments: i64 = db.conn().query_row("SELECT count(*) FROM segments", [], |r| r.get(0)).unwrap();
+        assert_eq!((meetings, segments), (1, 1), "raw note must exist before any LLM runs");
+
+        // A later successful enhancement upgrades the same row in place.
+        let note = EnhancedNote {
+            title: "Upgraded title".into(),
+            summary: "sum".into(),
+            chapters: vec![],
+            decisions: vec![],
+            action_items: vec![crate::llm::ActionItem { text: "do the thing".into(), owner: None, due: None }],
+        };
+        apply_enhancement(&db, "m1", &note).unwrap();
+        let title: String = db.conn().query_row("SELECT title FROM meetings WHERE id='m1'", [], |r| r.get(0)).unwrap();
+        let actions: i64 = db.conn().query_row("SELECT count(*) FROM action_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(title, "Upgraded title");
+        assert_eq!(actions, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Import a Granola export (JSON with an array of notes). The file is parsed

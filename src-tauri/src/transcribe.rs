@@ -1,21 +1,18 @@
 //! On-device transcription: whisper.cpp with streaming partial results,
-//! plus local speaker diarization via spectral-embedding clustering.
+//! plus local speaker diarization via trained speaker embeddings (TitaNet
+//! through sherpa-onnx, see `diarize.rs`) clustered online against running
+//! centroids.
 //!
-//! The worker drains the audio ring buffer in 2-second windows with 500 ms
-//! stride. Each finalized segment carries a speaker label computed on-device:
-//! we embed 1.5 s spectral windows (MFCC-ish via rustfft) and cluster them
-//! online with agglomerative assignment against running centroids.
-//!
-//! Nothing here touches the network, a file, or a socket.
+//! Nothing here touches the network or a socket.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use crate::audio::WHISPER_RATE;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Segment {
     pub start_ms: u64,
     pub end_ms: u64,
@@ -26,21 +23,36 @@ pub struct Segment {
 
 pub struct WhisperEngine {
     ctx: WhisperContext,
-    /// Running speaker centroids (spectral embeddings), online-clustered.
-    centroids: Vec<ndarray::Array1<f32>>,
+    /// Speaker-embedding diarizer; None when the ONNX model file is missing,
+    /// in which case every segment is labeled speaker 0.
+    diarizer: Option<crate::diarize::SpeakerDiarizer>,
+    /// Speaker carried forward for segments too short to embed.
+    last_speaker: u8,
 }
 
 impl WhisperEngine {
-    /// Load a GGML whisper model from the local model directory.
-    /// (Models are downloaded once by the user inside the app — the only
-    ///  moment Open Granola ever opens a socket, and only with Airlock off.)
+    /// Load a GGML whisper model from the local model directory, plus the
+    /// speaker-embedding model expected as `speaker-embed.onnx` next to it.
     pub fn load(model_path: &Path) -> Result<Self> {
         let ctx = WhisperContext::new_with_params(
             model_path.to_str().context("bad model path")?,
             WhisperContextParameters::default(),
         )
         .context("failed to load whisper model")?;
-        Ok(Self { ctx, centroids: Vec::new() })
+        let speaker_model = model_path.with_file_name("speaker-embed.onnx");
+        let diarizer = if speaker_model.exists() {
+            crate::diarize::SpeakerDiarizer::load(&speaker_model)
+                .map_err(|e| log::warn!("speaker model failed to load: {e}"))
+                .ok()
+        } else {
+            log::warn!("speaker-embed.onnx not found; labeling all segments speaker 0");
+            None
+        };
+        Ok(Self {
+            ctx,
+            diarizer,
+            last_speaker: 0,
+        })
     }
 
     /// Transcribe one window of 16 kHz mono samples.
@@ -76,28 +88,20 @@ impl WhisperEngine {
         Ok(out)
     }
 
-    /// Online diarization: embed the segment window, assign to nearest
-    /// centroid above cosine 0.78, else open a new cluster.
-    fn assign_speaker(&mut self, samples: &[f32], _t0: u64, _t1: u64) -> u8 {
-        let emb = spectral_embedding(samples);
-        let mut best: Option<(usize, f32)> = None;
-        for (i, c) in self.centroids.iter().enumerate() {
-            let sim = cosine(&emb, c);
-            if best.map(|(_, s)| sim > s).unwrap_or(true) {
-                best = Some((i, sim));
+    /// Online diarization over the segment's own time slice of the window.
+    /// Too-short segments inherit the current speaker rather than guessing.
+    fn assign_speaker(&mut self, samples: &[f32], t0: u64, t1: u64) -> u8 {
+        let Some(diarizer) = self.diarizer.as_mut() else {
+            return 0;
+        };
+        let start = (t0 as usize * WHISPER_RATE / 1000).min(samples.len());
+        let end = (t1 as usize * WHISPER_RATE / 1000).min(samples.len());
+        match diarizer.assign(&samples[start..end]) {
+            Some(s) => {
+                self.last_speaker = s;
+                s
             }
-        }
-        match best {
-            Some((i, s)) if s > 0.78 => {
-                // nudge centroid toward the new observation (EMA, alpha 0.1)
-                let c = &mut self.centroids[i];
-                *c = &*c * 0.9 + &emb * 0.1;
-                i as u8
-            }
-            _ => {
-                self.centroids.push(emb);
-                (self.centroids.len() - 1) as u8
-            }
+            None => self.last_speaker,
         }
     }
 
@@ -109,27 +113,3 @@ impl WhisperEngine {
     }
 }
 
-/// 40-bin spectral envelope over 1.5 s — a compact, model-free voiceprint.
-fn spectral_embedding(samples: &[f32]) -> ndarray::Array1<f32> {
-    use rustfft::{num_complex::Complex, FftPlanner};
-    const N: usize = 2048;
-    let take = samples.len().min(WHISPER_RATE * 3 / 2);
-    let mut buf: Vec<Complex<f32>> = vec![Complex::ZERO; N];
-    for (i, &s) in samples.iter().take(take.min(N)).enumerate() {
-        let hann = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos());
-        buf[i] = Complex::new(s * hann, 0.0);
-    }
-    let mut planner = FftPlanner::<f32>::new();
-    planner.plan_fft_forward(N).process(&mut buf);
-    let mut bins = ndarray::Array1::<f32>::zeros(40);
-    let width = (N / 2) / 40;
-    for (b, chunk) in buf[..N / 2].chunks(width).enumerate().take(40) {
-        bins[b] = (chunk.iter().map(|c| c.norm()).sum::<f32>() / width as f32).ln_1p();
-    }
-    let norm = bins.dot(&bins).sqrt().max(1e-6);
-    bins / norm
-}
-
-fn cosine(a: &ndarray::Array1<f32>, b: &ndarray::Array1<f32>) -> f32 {
-    a.dot(b) / (a.dot(a).sqrt() * b.dot(b).sqrt()).max(1e-6)
-}

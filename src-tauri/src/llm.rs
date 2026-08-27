@@ -86,8 +86,10 @@ impl LocalLlm {
     fn completion(&self, system: &str, user: &str, max_tokens: usize) -> Result<String> {
         let ctx_params = LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(8192));
         let mut ctx = self.model.new_context(&self.backend, ctx_params)?;
+        // "/no_think" is Qwen3's soft switch against emitting <think> blocks;
+        // extract_json additionally strips any that appear regardless.
         let prompt = format!(
-            "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+            "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user} /no_think<|im_end|>\n<|im_start|>assistant\n"
         );
         let tokens = self.model.str_to_token(&prompt, llama_cpp_2::model::AddBos::Always)?;
         let mut batch = llama_cpp_2::llama_batch::LlamaBatch::new(8192, 1);
@@ -104,7 +106,7 @@ impl LocalLlm {
         let mut out = String::new();
         let mut n_cur = tokens.len();
         for _ in 0..max_tokens {
-            let token = sampler.sample(&ctx, batch.i_batch(-1));
+            let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             if self.model.is_eog_token(token) {
                 break;
             }
@@ -218,9 +220,14 @@ pub struct Suggestion {
     pub body: String,
 }
 
-/// Models occasionally wrap JSON in prose or fences — peel it back.
+/// Models occasionally wrap JSON in prose, fences, or (Qwen3) a
+/// <think>…</think> reasoning block — peel all of that back.
 fn extract_json(raw: &str) -> Result<String> {
-    let start = raw.find(['{', '[']).context("no JSON in model output")?;
-    let end = raw.rfind(['}', ']']).context("no JSON end")?;
-    Ok(raw[start..=end].to_string())
+    let cleaned = match raw.rfind("</think>") {
+        Some(end) => &raw[end + "</think>".len()..],
+        None => raw,
+    };
+    let start = cleaned.find(['{', '[']).context("no JSON in model output")?;
+    let end = cleaned.rfind(['}', ']']).context("no JSON end")?;
+    Ok(cleaned[start..=end].to_string())
 }

@@ -6,5 +6,9 @@
 	<string>Open Granola captures your microphone to transcribe meetings on-device. Audio is never uploaded or stored by default.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Open Granola captures system audio to transcribe meetings on-device. Audio is never uploaded or stored by default.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Open Granola reads your local calendar to auto-title notes and write pre-meeting briefs. Calendar data never leaves your machine.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Open Granola reads your local calendar to auto-title notes and write pre-meeting briefs. Calendar data never leaves your machine.</string>
 </dict>
 </plist>

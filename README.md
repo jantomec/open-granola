@@ -57,7 +57,11 @@ pointed at a dead registry mirror. As of August 2026 this fork:
   in `src-tauri/src/audio/loopback.rs` are still stubs, so on those platforms remote
   participants are heard only if they play through your speakers.
 - **In-app model download is not implemented** — the Download buttons in Settings are inert.
-  Place model files manually in `~/Library/Application Support/app.opengranola/library/models/`:
+  Place model files manually in the library folder (launch the app once so it exists):
+  - release build (sandboxed):
+    `~/Library/Containers/app.opengranola/Data/Library/Application Support/app.opengranola/library/models/`
+  - dev build (unsigned, `npm run tauri dev`):
+    `~/Library/Application Support/app.opengranola/library/models/`
 
   | File name (must match exactly) | Model | Source |
   |---|---|---|
@@ -111,13 +115,15 @@ removes the business model:
 
 ## Install
 
-There are no binary releases yet — build from source (below). Packaged builds (`.dmg`, `.msi`,
-AppImage/deb/Flatpak) will appear in
-[**Releases**](https://github.com/jantomec/open-granola/releases) once the first release is cut.
+**macOS (Apple Silicon, 14.4+):** download the `.dmg` from
+[**Releases**](https://github.com/jantomec/open-granola/releases) and drag the app to
+Applications. The app is signed but **not notarized**: on first open macOS refuses with
+"Apple could not verify…" — click Done, then **System Settings → Privacy & Security →
+Open Anyway** (needed once). Windows and Linux: build from source (below).
 
 Open Granola never opens a socket, and in-app model download is not implemented yet — so fetch the
-model files yourself (~3 GB) and place them in the library folder. The exact file names and sources
-are in the table under [Known gaps](#known-gaps-inherited-not-yet-fixed).
+model files yourself (~4 GB) and place them in the library folder. The exact file names, sources
+and paths are in the table under [Known gaps](#known-gaps-inherited-not-yet-fixed).
 
 ### Build from source
 

@@ -13,7 +13,7 @@
 │  audio/          transcribe.rs        llm.rs          storage.rs   │
 │  ├ mic (cpal)    ├ whisper.cpp        ├ enhance       ├ SQLite     │
 │  ├ loopback      │  (streaming)       ├ live assist   ├ sqlite-vec │
-│  │ ├ mac: tap    ├ spectral diarize   ├ chat (RAG)    ├ FTS5       │
+│  │ ├ mac: tap    ├ TitaNet diarize    ├ chat (RAG)    ├ FTS5       │
 │  │ ├ win: WASAPI └ vocab prompting    └ embeddings    ├ retention  │
 │  │ └ linux: PW                                        └ purge      │
 │  └ 16 kHz mono ring buffer (RAM only)                              │
@@ -29,8 +29,9 @@
    pushed into a lock-free ring buffer sized for 4 minutes (drained continuously, so steady-state
    usage is ~2 seconds of audio ≈ 64 kB). **Audio never touches disk in default mode.**
 2. **Transcribe.** A worker drains the buffer in 2 s windows / 500 ms stride through whisper.cpp.
-   Each segment gets a speaker label from online clustering of spectral embeddings (40-bin log
-   envelopes, cosine threshold 0.78, EMA centroid updates). Partial results stream to the UI as
+   Each segment gets a speaker label from a NeMo TitaNet-small embedding (sherpa-onnx), clustered
+   online against running centroids (cosine threshold 0.5, EMA updates with α = 0.1; segments
+   under 0.4 s are too short to embed and keep no label). Partial results stream to the UI as
    `segment` events. A vocabulary prompt built from the user's custom dictionary biases decoding
    toward correct names and numbers.
 3. **Live assist.** Every ~8 s the rolling window plus top-3 recalled snippets (sqlite-vec cosine
@@ -51,9 +52,10 @@
 - **whisper.cpp + llama.cpp over hosted APIs** — the only way "nothing leaves your machine" is a
   fact rather than a policy. Apple Silicon / CUDA acceleration makes Large-v3-Turbo realtime on
   anything from an M1 up; Parakeet is offered for CUDA boxes.
-- **Spectral diarization over pyannote** — pyannote needs PyTorch (GBs, Python). A model-free
-  spectral-clustering diarizer is ~150 lines of Rust, runs in real time on CPU, and is good enough
-  for ≤6 speakers. A candle-based embedding model is a planned upgrade behind the same interface.
+- **TitaNet-small via sherpa-onnx over pyannote** — pyannote needs PyTorch (GBs, Python). A small
+  ONNX speaker-embedding model runs in real time on CPU and clusters online in ~100 lines of Rust.
+  (It replaced an earlier model-free spectral heuristic, which captured loudness and room tone
+  rather than voice identity.)
 - **SQLite + sqlite-vec over a vector DB** — one file, zero services, trivially inspectable and
   truly deletable.
 

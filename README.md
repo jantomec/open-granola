@@ -65,6 +65,10 @@ pointed at a dead registry mirror. As of August 2026 this fork:
 
 - The Parakeet and Llama 8B entries in Settings are display-only; the backend loads the
   fixed filenames above.
+- **Only the Granola importer works** — the Otter / Fireflies / read.ai import button in
+  Settings does nothing yet.
+- **No action-item export** — the notes stay in the app; Markdown/Obsidian/clipboard export
+  is on the roadmap.
 
 ## Why Open Granola
 
@@ -84,46 +88,38 @@ removes the business model:
 | Mobile capture | Companion via local pairing (roadmap) | iOS + Android apps |
 | Speaker diarization | **On-device, free** | Cloud, degrades past 3 people |
 | Linux | **First-class** | No |
-| Audio playback to verify lines | **Optional, encrypted, local** | Not available |
 | License | **Apache-2.0** | Proprietary |
 
 ## Features
 
-- 🎙️ **Bot-free capture** — system audio + mic, per-platform native loopback (CoreAudio process-tap / WASAPI loopback / PipeWire). Nobody in the call sees anything.
-- ⚡ **Streaming on-device transcription** — Whisper Large v3 Turbo or NVIDIA Parakeet, 99 languages, with custom vocabulary for your names, numbers and jargon.
+- 🎙️ **Bot-free capture** — nobody in the call sees anything. Today this means microphone capture; per-platform system-audio loopback (CoreAudio process-tap / WASAPI / PipeWire) is in progress — see [Known gaps](#known-gaps-inherited-not-yet-fixed).
+- ⚡ **Streaming on-device transcription** — Whisper Large v3 Turbo, 99 languages, with custom vocabulary for your names, numbers and jargon. (NVIDIA Parakeet: planned.)
 - 🧠 **Local AI notes** — an embedded GGUF model (Qwen3-4B default) writes the summary, chapters, decisions and action items with owners and due dates the moment you stop.
 - 💡 **Live assist** — during the meeting, a private panel surfaces recall from past notes, relevant facts, and suggested follow-up questions. Only you see it.
 - 🔍 **Semantic search + chat** — every meeting is embedded into a local sqlite-vec index. Ask “what did Vesper say about compliance?” and get answers with timestamps.
 - 🗞️ **Pre-meeting Briefs** — before each call, Open Granola writes a private brief: what happened last time with these people, which commitments are riding on this meeting, and three things worth raising. All from local RAG.
 - 🤝 **Commitment ledger** — every promise anyone makes (“I'll have it by Friday”) is extracted, tracked across meetings, and resurfaced when due. Nobody else builds this at any price.
 - 📖 **Recipes** — shareable Markdown prompt packs (objection miner, board-update extractor…) that run on your local model. Publish them with a PR.
-- 📥 **Importers** — one-click migration from Granola, Otter, Fireflies and read.ai exports. Switching costs: deleted.
+- 📥 **Importer** — migrate from a Granola JSON export in one click. (Otter, Fireflies and read.ai importers: planned.)
 - 📅 **Calendar-aware** — reads your local calendar (EventKit / ICS / CalDAV cache) to auto-title notes and prompt capture. Google and Outlook treated equally — no account needed.
-- ✅ **Action items that travel** — auto-export to Markdown, Obsidian, Notion (local API token), Todoist or clipboard after every meeting.
 - 🗂️ **Templates** — product sync, 1:1, sales discovery, interview, standup, board update — or your own Markdown.
 - 🔐 **Airlock** — one build flag removes the network stack; the macOS sandbox additionally denies outbound sockets below the process. See [`src-tauri/src/airlock.rs`](src-tauri/src/airlock.rs).
-- 🗑️ **Real deletion** — audio dies at transcription by default; retention auto-purge *shreds* notes, transcripts and embeddings (with `VACUUM`, so it's physical).
+- 🗑️ **Real deletion** — audio lives only in RAM and dies at transcription; retention auto-purge *shreds* notes, transcripts and embeddings (with `VACUUM`, so it's physical); one-click purge zero-fills the database file before unlinking it.
 
 ## Install
 
-Download the latest build for your platform from
-[**Releases**](https://github.com/anshuman-pandey/open-granola/releases):
+There are no binary releases yet — build from source (below). Packaged builds (`.dmg`, `.msi`,
+AppImage/deb/Flatpak) will appear in
+[**Releases**](https://github.com/jantomec/open-granola/releases) once the first release is cut.
 
-| Platform | Package |
-|---|---|
-| macOS (Apple Silicon + Intel) | `Open Granola.dmg` |
-| Windows | `Open Granola.msi` |
-| Linux | `Open Granola.AppImage` / `opengranola.deb` / Flatpak |
-
-On first launch Open Granola offers to fetch the on-device models (~4 GB total: Whisper, Qwen3, Nomic
-embed). That model download is **the only network request Open Granola ever makes** — disable Airlock for
-one minute to fetch them, or drop the GGUF files into the library folder manually and never open a
-socket at all.
+Open Granola never opens a socket, and in-app model download is not implemented yet — so fetch the
+model files yourself (~3 GB) and place them in the library folder. The exact file names and sources
+are in the table under [Known gaps](#known-gaps-inherited-not-yet-fixed).
 
 ### Build from source
 
 ```bash
-git clone https://github.com/anshuman-pandey/open-granola.git && cd open-granola
+git clone https://github.com/jantomec/open-granola.git && cd open-granola
 npm install
 npm run tauri dev        # dev build
 npm run tauri build      # release bundles in src-tauri/target/release/bundle
@@ -138,7 +134,7 @@ On Linux: `libpipewire-0.3-dev`, `libwebkit2gtk-4.1-dev`, `libasound2-dev`.
 mic ──┐                                  ┌─► streaming transcript (UI)
       ├─► mix → 16 kHz mono ring buffer ─┤
 system┘   (RAM only — never on disk)     │   whisper.cpp windows (2 s / 500 ms stride)
-                                         └─► spectral clustering → speaker labels
+                                         └─► TitaNet speaker embeddings → online clustering → labels
 stop ─► transcript ─► llama.cpp ─► structured notes (summary · chapters · decisions · actions)
      ─► nomic-embed ─► sqlite-vec index ─► semantic search + chat + live-assist recall
 audio ─► shredded (default) or encrypted-at-rest (opt-in)
@@ -151,18 +147,23 @@ Full details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 1. **No network code exists in the app.** CI rejects any PR that adds an HTTP/WebSocket dependency.
 2. **The OS enforces it too.** The macOS build ships without the `network.client` entitlement and
    loads a seatbelt profile denying outbound sockets at launch.
-3. **Audio is deleted when transcription finishes.** Keeping encrypted local audio is opt-in.
+3. **Audio is deleted when transcription finishes.** It only ever lives in RAM. (Opt-in encrypted
+   local retention is planned, not yet built.)
 4. **One-click purge** zero-fills the database file before unlinking it.
 5. **Apache-2.0** — audit every line, or pay someone to. ([PRIVACY.md](PRIVACY.md))
 
 ## Roadmap
 
-- [x] Bot-free capture on macOS / Windows / Linux
-- [x] Streaming Whisper + on-device diarization
+- [x] Mic capture + streaming Whisper + on-device diarization
 - [x] Local LLM enhancement, chat, semantic search
 - [x] Live assist (recall, facts, follow-ups)
 - [x] Pre-meeting Briefs + cross-meeting commitment ledger
-- [x] Recipes + Granola/Otter/Fireflies importers
+- [x] Recipes + Granola JSON importer
+- [ ] System-audio loopback (macOS process-tap first, then WASAPI / PipeWire)
+- [ ] In-app model download
+- [ ] Otter / Fireflies / read.ai importers
+- [ ] Action-item export (Markdown, Obsidian vault, clipboard)
+- [ ] Opt-in encrypted audio retention + playback to verify lines
 - [ ] Push-to-talk dictation in any app
 - [ ] Local speaker identification ("that was Priya", trained on-device)
 - [ ] SIEM-friendly signed audit export

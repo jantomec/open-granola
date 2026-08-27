@@ -11,7 +11,7 @@ First: thank you. Open Granola exists because meeting software forgot who it wor
 ## Dev setup
 
 ```bash
-git clone https://github.com/anshuman-pandey/open-granola.git && cd open-granola
+git clone https://github.com/jantomec/open-granola.git && cd open-granola
 npm install
 npm run tauri dev
 ```
@@ -26,7 +26,7 @@ folder on first run — or drop GGUFs into `library/models/` manually:
 
 ## Where to start
 
-- Issues labeled [`good first issue`](https://github.com/anshuman-pandey/open-granola/labels/good%20first%20issue)
+- Issues labeled [`good first issue`](https://github.com/jantomec/open-granola/labels/good%20first%20issue)
 - Platform audio: `src-tauri/src/audio/loopback.rs` (Windows WASAPI and Linux PipeWire need the most love)
 - Diarization quality: `src-tauri/src/transcribe.rs` (`spectral_embedding` / clustering)
 - Templates & UX polish: `src/components/TemplatesView.tsx`

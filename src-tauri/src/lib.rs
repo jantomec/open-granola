@@ -49,6 +49,11 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?.join("library");
             std::fs::create_dir_all(&data_dir)?;
             let db = storage::Db::open(&data_dir.join("opengranola.db"))?;
+            // Shred notes past the retention policy and Recently Deleted
+            // items older than 30 days. Failure must never block startup.
+            if let Err(e) = db.enforce_retention() {
+                log::error!("retention enforcement failed: {e}");
+            }
             app.manage(Arc::new(AppState {
                 data_dir,
                 db: Mutex::new(db),
@@ -72,6 +77,9 @@ pub fn run() {
             commands::set_meeting_project,
             commands::rename_meeting,
             commands::delete_meeting,
+            commands::restore_meeting,
+            commands::delete_meeting_permanently,
+            commands::list_deleted_meetings,
             commands::ask_library,
             commands::semantic_search,
             commands::toggle_action_item,

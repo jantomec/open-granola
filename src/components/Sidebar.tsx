@@ -212,6 +212,12 @@ export function Sidebar(p: Props) {
           p.view.kind === "settings",
           () => p.onNavigate({ kind: "settings" }),
         )}
+        {navItem(
+          <Trash2 size={14} />,
+          "Recently Deleted",
+          p.view.kind === "trash",
+          () => p.onNavigate({ kind: "trash" }),
+        )}
       </nav>
 
       {/* projects */}

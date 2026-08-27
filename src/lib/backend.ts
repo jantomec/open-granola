@@ -9,7 +9,7 @@
  * The UI never branches on mode directly except where the demo needs to
  * simulate latency/streaming; everything else goes through this layer.
  */
-import type { ActionItem, Brief, Commitment, Meeting, Person, Project } from "./types";
+import type { ActionItem, Brief, Commitment, DeletedMeeting, Meeting, Person, Project } from "./types";
 import { ACTION_ITEMS, BRIEF, COMMITMENTS, MEETINGS } from "./data";
 
 export interface SearchHit {
@@ -45,7 +45,11 @@ export interface Backend {
   deleteProject(id: string): Promise<void>;
   setMeetingProject(meetingId: string, projectId: string | null): Promise<void>;
   renameMeeting(id: string, title: string): Promise<void>;
+  /** Soft delete: moves the meeting to Recently Deleted (30-day recovery). */
   deleteMeeting(id: string): Promise<void>;
+  listDeletedMeetings(): Promise<DeletedMeeting[]>;
+  restoreMeeting(id: string): Promise<void>;
+  deleteMeetingPermanently(id: string): Promise<void>;
   getBrief(): Promise<Brief | null>;
   listCommitments(): Promise<Commitment[]>;
   markCommitment(id: string, status: "open" | "kept"): Promise<void>;
@@ -88,6 +92,9 @@ const demoBackend: Backend = {
   listCommitments: async () => COMMITMENTS,
   renameMeeting: async () => {}, // demo: App updates its local state
   deleteMeeting: async () => {}, // demo: App updates its local state
+  listDeletedMeetings: async () => [],
+  restoreMeeting: async () => {},
+  deleteMeetingPermanently: async () => {},
   markCommitment: async () => {},
   runRecipe: async () =>
     "Demo mode: recipes run against the on-device model in the desktop app. Copy the prompt and it will execute locally over your real library.",
@@ -321,6 +328,20 @@ const tauriBackend: Backend = {
 
   renameMeeting: (id, title) => tauriInvoke("rename_meeting", { id, title }),
   deleteMeeting: (id) => tauriInvoke("delete_meeting", { id }),
+  async listDeletedMeetings() {
+    const rows = await tauriInvoke<
+      { id: string; title: string; started_at: string; duration_s: number; deleted_at: string }[]
+    >("list_deleted_meetings");
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      date: r.started_at.replace(" ", "T"),
+      durationMin: Math.max(1, Math.round(r.duration_s / 60)),
+      deletedAt: r.deleted_at.replace(" ", "T"),
+    }));
+  },
+  restoreMeeting: (id) => tauriInvoke("restore_meeting", { id }),
+  deleteMeetingPermanently: (id) => tauriInvoke("delete_meeting_permanently", { id }),
   markCommitment: (id, status) => tauriInvoke("mark_commitment", { id, status }),
 
   runRecipe: (prompt, meetingId) => tauriInvoke("run_recipe", { prompt, meetingId: meetingId ?? null }),

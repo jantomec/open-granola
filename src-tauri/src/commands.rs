@@ -177,7 +177,7 @@ pub async fn list_meetings(state: State<'_, Arc<AppState>>) -> Result<serde_json
     let db = state.db.lock();
     let mut stmt = db
         .conn()
-        .prepare("SELECT id,title,started_at,duration_s,summary,starred FROM meetings ORDER BY started_at DESC")
+        .prepare("SELECT id,title,started_at,duration_s,summary,starred FROM meetings WHERE deleted_at IS NULL ORDER BY started_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -252,6 +252,7 @@ pub async fn list_action_items(state: State<'_, Arc<AppState>>) -> Result<serde_
     let mut stmt = db.conn().prepare(
         "SELECT a.id, a.text, a.owner, a.due, a.done, a.meeting_id, m.title
          FROM action_items a JOIN meetings m ON m.id = a.meeting_id
+         WHERE m.deleted_at IS NULL
          ORDER BY a.done, m.started_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -270,7 +271,7 @@ pub async fn list_projects(state: State<'_, Arc<AppState>>) -> Result<serde_json
     let db = state.db.lock();
     let mut stmt = db.conn().prepare(
         "SELECT p.id, p.name, COUNT(m.id) FROM projects p
-         LEFT JOIN meetings m ON m.project_id = p.id
+         LEFT JOIN meetings m ON m.project_id = p.id AND m.deleted_at IS NULL
          GROUP BY p.id ORDER BY p.name",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -355,31 +356,68 @@ pub async fn rename_meeting(
     Ok(())
 }
 
+/// Soft delete: the meeting moves to Recently Deleted, where it stays
+/// recoverable for 30 days (enforce_retention shreds it after that).
 #[tauri::command]
 pub async fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
-    delete_meeting_rows(&state.db.lock(), &id).map_err(|e| e.to_string())
+    let n = state
+        .db
+        .lock()
+        .conn()
+        .execute("UPDATE meetings SET deleted_at=datetime('now') WHERE id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("no such meeting".into());
+    }
+    Ok(())
 }
 
-/// Delete one meeting and everything derived from it. The schema declares
-/// ON DELETE CASCADE, but foreign-key enforcement is never turned on for
-/// this connection, so the cleanup is explicit — the same approach as
-/// `storage::purge_all`. The FTS index is NOT touched here: the
-/// segments_fts_ad trigger un-indexes each segment as it is deleted, which
-/// is the only safe way (manually deleting rows the index never held raises
-/// SQLITE_CORRUPT_VTAB — the original v0.2.1 delete bug).
-fn delete_meeting_rows(db: &Db, id: &str) -> anyhow::Result<()> {
-    let conn = db.conn();
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "DELETE FROM embeddings WHERE segment_id IN (SELECT id FROM segments WHERE meeting_id=?1)",
-        [id],
-    )?;
-    tx.execute("DELETE FROM segments WHERE meeting_id=?1", [id])?;
-    tx.execute("DELETE FROM action_items WHERE meeting_id=?1", [id])?;
-    tx.execute("DELETE FROM commitments WHERE meeting_id=?1", [id])?;
-    tx.execute("DELETE FROM meetings WHERE id=?1", [id])?;
-    tx.commit()?;
+/// Bring a meeting back from Recently Deleted.
+#[tauri::command]
+pub async fn restore_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let n = state
+        .db
+        .lock()
+        .conn()
+        .execute("UPDATE meetings SET deleted_at=NULL WHERE id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("no such meeting".into());
+    }
     Ok(())
+}
+
+/// Delete from Recently Deleted: gone now, not in 30 days.
+#[tauri::command]
+pub async fn delete_meeting_permanently(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    state.db.lock().delete_meeting_rows(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_deleted_meetings(
+    state: State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let db = state.db.lock();
+    let mut stmt = db
+        .conn()
+        .prepare(
+            "SELECT id,title,started_at,duration_s,deleted_at FROM meetings
+             WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_,String>(0)?, "title": r.get::<_,String>(1)?,
+                "started_at": r.get::<_,String>(2)?, "duration_s": r.get::<_,i64>(3)?,
+                "deleted_at": r.get::<_,String>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::Value::Array(rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?))
 }
 
 #[tauri::command]
@@ -395,6 +433,7 @@ pub async fn ask_library(
             "SELECT s.text, m.title, s.start_ms FROM segments s
              JOIN meetings m ON m.id = s.meeting_id
              WHERE s.rowid IN (SELECT rowid FROM segments_fts WHERE segments_fts MATCH ?1)
+               AND m.deleted_at IS NULL
              LIMIT 6",
         ).map_err(|e| e.to_string())?;
         let q = question.clone();
@@ -417,7 +456,8 @@ pub async fn ask_library(
 pub async fn semantic_search(state: State<'_, Arc<AppState>>, query: String) -> Result<serde_json::Value, String> {
     let db = state.db.lock();
     let mut stmt = db.conn().prepare(
-        "SELECT m.id, m.title, m.started_at FROM meetings m WHERE m.title LIKE ?1 OR m.summary LIKE ?1 LIMIT 10",
+        "SELECT m.id, m.title, m.started_at FROM meetings m
+         WHERE (m.title LIKE ?1 OR m.summary LIKE ?1) AND m.deleted_at IS NULL LIMIT 10",
     ).map_err(|e| e.to_string())?;
     let like = format!("%{query}%");
     let rows = stmt.query_map([&like], |r| {
@@ -490,7 +530,7 @@ pub async fn get_brief(state: State<'_, Arc<AppState>>) -> Result<serde_json::Va
         let db = state.db.lock();
         let mut stmt = db.conn().prepare(
             "SELECT m.title, m.started_at, m.summary FROM meetings m
-             ORDER BY m.started_at DESC LIMIT 4",
+             WHERE m.deleted_at IS NULL ORDER BY m.started_at DESC LIMIT 4",
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             Ok(format!("[{} {}] {}", r.get::<_, String>(0)?, r.get::<_, String>(1)?,
@@ -535,6 +575,7 @@ pub async fn list_commitments(state: State<'_, Arc<AppState>>) -> Result<serde_j
     let mut stmt = db.conn().prepare(
         "SELECT c.id, c.text, c.owner, c.due, c.status, c.made_on, c.evidence, m.title, c.meeting_id
          FROM commitments c JOIN meetings m ON m.id = c.meeting_id
+         WHERE m.deleted_at IS NULL
          ORDER BY CASE c.status WHEN 'overdue' THEN 0 WHEN 'open' THEN 1 ELSE 2 END, c.made_on DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -571,7 +612,8 @@ pub async fn run_recipe(
                 id.clone(),
             ),
             None => (
-                "SELECT m.title || ' ' || COALESCE(m.summary,'') FROM meetings m ORDER BY m.started_at DESC LIMIT 6",
+                "SELECT m.title || ' ' || COALESCE(m.summary,'') FROM meetings m
+                 WHERE m.deleted_at IS NULL ORDER BY m.started_at DESC LIMIT 6",
                 String::new(),
             ),
         };
@@ -669,9 +711,78 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hits, 1, "rebuild must re-index legacy segments");
-        delete_meeting_rows(&db, "m1").unwrap();
+        db.delete_meeting_rows("m1").unwrap();
         let n: i64 = db.conn().query_row("SELECT count(*) FROM meetings", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Recently Deleted lifecycle: soft delete hides a meeting from the
+    /// live library but keeps it recoverable; restore brings it back; after
+    /// 30 days in the trash, enforce_retention shreds it fully — segments,
+    /// index entries and all. Also proves the retention-policy path no
+    /// longer orphans derived rows (it used to delete only the meetings row).
+    #[test]
+    fn trash_lifecycle_soft_delete_restore_and_shred() {
+        let dir = std::env::temp_dir().join(format!("og-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::storage::Db::open(&dir.join("t.db")).unwrap();
+        let seg_text = |text: &str| {
+            vec![Segment { start_ms: 0, end_ms: 1500, speaker: 0, text: text.into(), final_: true }]
+        };
+        persist_raw_meeting(&db, "m1", "Trashed", &seg_text("alpha")).unwrap();
+        let live = || -> i64 {
+            db.conn()
+                .query_row("SELECT count(*) FROM meetings WHERE deleted_at IS NULL", [], |r| r.get(0))
+                .unwrap()
+        };
+        let fts = |term: &str| -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT count(*) FROM segments_fts WHERE segments_fts MATCH ?1",
+                    [term],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+
+        // Soft delete (what the delete_meeting command runs): hidden, kept.
+        db.conn().execute("UPDATE meetings SET deleted_at=datetime('now') WHERE id='m1'", []).unwrap();
+        assert_eq!(live(), 0, "trashed meeting must leave the live library");
+        assert_eq!(
+            db.conn().query_row::<i64, _, _>("SELECT count(*) FROM meetings", [], |r| r.get(0)).unwrap(),
+            1,
+            "trashed meeting must still exist"
+        );
+
+        // Restore (the restore_meeting command).
+        db.conn().execute("UPDATE meetings SET deleted_at=NULL WHERE id='m1'", []).unwrap();
+        assert_eq!(live(), 1, "restored meeting must be back");
+
+        // 31 days in the trash → the startup sweep shreds it completely.
+        db.conn()
+            .execute("UPDATE meetings SET deleted_at=datetime('now','-31 days') WHERE id='m1'", [])
+            .unwrap();
+        assert_eq!(db.enforce_retention().unwrap(), 1);
+        for table in ["meetings", "segments"] {
+            let n: i64 = db
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table} after trash sweep");
+        }
+        assert_eq!(fts("alpha"), 0, "trash sweep left FTS entries behind");
+
+        // Retention-policy expiry must shred derived rows too, not orphan them.
+        persist_raw_meeting(&db, "m2", "Expired", &seg_text("bravo")).unwrap();
+        db.conn()
+            .execute("UPDATE meetings SET expires_at=datetime('now','-1 day') WHERE id='m2'", [])
+            .unwrap();
+        assert_eq!(db.enforce_retention().unwrap(), 1);
+        let segs: i64 =
+            db.conn().query_row("SELECT count(*) FROM segments", [], |r| r.get(0)).unwrap();
+        assert_eq!(segs, 0, "retention expiry orphaned segments");
+        assert_eq!(fts("bravo"), 0, "retention expiry orphaned FTS entries");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -727,7 +838,7 @@ mod tests {
         };
         assert_eq!((fts_pre("banana"), fts_pre("coconut")), (1, 1), "triggers must index inserts");
 
-        delete_meeting_rows(&db, "m1").unwrap();
+        db.delete_meeting_rows("m1").unwrap();
 
         for (table, expected) in
             [("meetings", 1), ("segments", 1), ("action_items", 0), ("commitments", 0), ("embeddings", 0)]

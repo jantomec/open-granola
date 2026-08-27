@@ -8,6 +8,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ActionItemsView } from "./components/ActionItemsView";
 import { CommitmentsView } from "./components/CommitmentsView";
 import { TemplatesView } from "./components/TemplatesView";
+import { TrashView } from "./components/TrashView";
 import { MEETINGS, PEOPLE } from "./lib/data";
 import { getBackend } from "./lib/backend";
 import { useLiveSession, type LiveLine } from "./hooks/useLiveSession";
@@ -227,6 +228,15 @@ export default function App() {
         {view.kind === "commitments" && <CommitmentsView onOpenMeeting={openMeeting} />}
         {view.kind === "templates" && <TemplatesView />}
         {view.kind === "settings" && <SettingsView />}
+        {view.kind === "trash" && (
+          <TrashView
+            onRestored={() => {
+              if (backend.mode === "tauri") backend.listMeetings().then(setMeetings).catch(() => {});
+              reloadProjects();
+            }}
+            onError={setSaveError}
+          />
+        )}
       </main>
 
       {live.active && (

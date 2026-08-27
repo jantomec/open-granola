@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS meetings (
     chapters_json TEXT,
     decisions_json TEXT,
     starred       INTEGER DEFAULT 0,
-    expires_at    TEXT          -- set by the user's retention policy
+    expires_at    TEXT,         -- set by the user's retention policy
+    deleted_at    TEXT          -- soft delete: in the Recently Deleted folder
 );
 CREATE TABLE IF NOT EXISTS segments (
     id         TEXT PRIMARY KEY,
@@ -97,9 +98,10 @@ impl Db {
         });
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
-        // Migration for libraries created before projects existed; the ALTER
-        // fails harmlessly once the column is there.
+        // Migrations for libraries created before these columns existed; the
+        // ALTERs fail harmlessly once the column is there.
         let _ = conn.execute("ALTER TABLE meetings ADD COLUMN project_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE meetings ADD COLUMN deleted_at TEXT", []);
         // One-time FTS backfill: libraries written before the sync triggers
         // existed hold segments the index never saw — searches missed them,
         // and deleting them corrupted the virtual table. 'rebuild' re-derives
@@ -118,19 +120,48 @@ impl Db {
         Ok(Self { conn })
     }
 
-    /// Retention policy enforcement: shred (not hide) anything past its
-    /// expiry. Called on every app start and nightly while running.
-    pub fn enforce_retention(&self) -> Result<usize> {
-        let n = self.conn.execute(
-            "DELETE FROM meetings WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            [],
+    /// Hard-delete one meeting and every derived row. The schema declares
+    /// ON DELETE CASCADE but foreign-key enforcement is off on this
+    /// connection, so cleanup is explicit. The FTS index is not touched:
+    /// the segments_fts_ad trigger un-indexes each segment as it goes.
+    pub fn delete_meeting_rows(&self, id: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM embeddings WHERE segment_id IN (SELECT id FROM segments WHERE meeting_id=?1)",
+            [id],
         )?;
-        if n > 0 {
-            log::info!("retention policy shredded {n} expired meeting(s)");
+        tx.execute("DELETE FROM segments WHERE meeting_id=?1", [id])?;
+        tx.execute("DELETE FROM action_items WHERE meeting_id=?1", [id])?;
+        tx.execute("DELETE FROM commitments WHERE meeting_id=?1", [id])?;
+        tx.execute("DELETE FROM meetings WHERE id=?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Retention + trash enforcement: shred (not hide) anything past the
+    /// user's retention policy, and empty Recently Deleted items older than
+    /// 30 days. Runs on every app start (see lib.rs setup). Earlier versions
+    /// deleted only the meetings row, orphaning transcripts and embeddings —
+    /// each meeting now goes through the full hard delete.
+    pub fn enforce_retention(&self) -> Result<usize> {
+        let ids: Vec<String> = self
+            .conn
+            .prepare(
+                "SELECT id FROM meetings
+                 WHERE (expires_at IS NOT NULL AND expires_at < datetime('now'))
+                    OR (deleted_at IS NOT NULL AND deleted_at < datetime('now','-30 days'))",
+            )?
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        for id in &ids {
+            self.delete_meeting_rows(id)?;
         }
-        // Reclaim pages so deletion is physical, not just logical.
-        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
-        Ok(n)
+        if !ids.is_empty() {
+            log::info!("retention/trash shredded {} meeting(s)", ids.len());
+            // Reclaim pages so deletion is physical, not just logical.
+            self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        }
+        Ok(ids.len())
     }
 
     /// The nuclear option, wired to Settings → "Delete everything".
@@ -139,8 +170,9 @@ impl Db {
     pub fn purge_all(&mut self, path: &Path) -> Result<()> {
         self.conn.execute_batch(
             "PRAGMA foreign_keys=OFF; DELETE FROM embeddings; DELETE FROM action_items;
-             DELETE FROM segments; DELETE FROM meetings;
-             DELETE FROM settings; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;",
+             DELETE FROM segments; DELETE FROM commitments; DELETE FROM meetings;
+             DELETE FROM projects; DELETE FROM recipes; DELETE FROM settings;
+             PRAGMA wal_checkpoint(TRUNCATE); VACUUM;",
         )?;
         let size = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
         if size > 0 {

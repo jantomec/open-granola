@@ -102,4 +102,14 @@ export type View =
   | { kind: "actions" }
   | { kind: "commitments" }
   | { kind: "templates" }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  | { kind: "trash" };
+
+/** A meeting sitting in Recently Deleted, recoverable for 30 days. */
+export interface DeletedMeeting {
+  id: string;
+  title: string;
+  date: string; // ISO, when the meeting happened
+  durationMin: number;
+  deletedAt: string; // ISO, when it was moved to the trash
+}

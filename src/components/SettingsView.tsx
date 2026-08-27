@@ -1,21 +1,14 @@
 import { Download, FileUp, HardDrive, ShieldCheck, Trash2 } from "lucide-react";
+import { Switch } from "./ui/switch";
 import { useEffect, useRef, useState } from "react";
 import { MODELS } from "../lib/data";
 import { getBackend } from "../lib/backend";
 
+// The previous hand-rolled toggle shrank inside its flex row while its knob
+// sat at a fixed left offset, so it rendered too narrow with the knob
+// overflowing. The Radix switch is shrink-proof (shrink-0, translate thumb).
 function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
-  return (
-    <button
-      onClick={onChange}
-      className={`relative h-5.5 w-10 rounded-full transition-colors ${on ? "bg-primary" : "bg-input"}`}
-      style={{ height: 22 }}
-    >
-      <span
-        className="absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow transition-all"
-        style={{ left: on ? 20 : 2 }}
-      />
-    </button>
-  );
+  return <Switch checked={on} onCheckedChange={onChange} />;
 }
 
 function Row({ title, desc, children }: { title: string; desc: string; children: React.ReactNode }) {

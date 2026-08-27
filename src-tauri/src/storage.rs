@@ -3,7 +3,7 @@
 //! no analytics events table — there is nothing to send anywhere.
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 pub struct Db {
@@ -33,6 +33,19 @@ CREATE TABLE IF NOT EXISTS segments (
     text       TEXT NOT NULL
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(text, content='segments', content_rowid='rowid');
+-- External-content FTS5 indexes nothing by itself: these triggers are the
+-- canonical sync pattern. Deleting a segment whose tokens the index does
+-- not hold raises SQLITE_CORRUPT_VTAB, so the index must never drift.
+CREATE TRIGGER IF NOT EXISTS segments_fts_ai AFTER INSERT ON segments BEGIN
+  INSERT INTO segments_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS segments_fts_ad AFTER DELETE ON segments BEGIN
+  INSERT INTO segments_fts(segments_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS segments_fts_au AFTER UPDATE OF text ON segments BEGIN
+  INSERT INTO segments_fts(segments_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+  INSERT INTO segments_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
 CREATE TABLE IF NOT EXISTS action_items (
     id         TEXT PRIMARY KEY,
     meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
@@ -87,6 +100,21 @@ impl Db {
         // Migration for libraries created before projects existed; the ALTER
         // fails harmlessly once the column is there.
         let _ = conn.execute("ALTER TABLE meetings ADD COLUMN project_id TEXT", []);
+        // One-time FTS backfill: libraries written before the sync triggers
+        // existed hold segments the index never saw — searches missed them,
+        // and deleting them corrupted the virtual table. 'rebuild' re-derives
+        // the whole index from the content table.
+        let rebuilt: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key='fts_rebuilt_v1'", [], |r| r.get(0))
+            .optional()?;
+        if rebuilt.is_none() {
+            conn.execute("INSERT INTO segments_fts(segments_fts) VALUES('rebuild')", [])?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES('fts_rebuilt_v1','1')",
+                [],
+            )?;
+            log::info!("segments_fts index rebuilt (one-time migration)");
+        }
         Ok(Self { conn })
     }
 
@@ -111,7 +139,7 @@ impl Db {
     pub fn purge_all(&mut self, path: &Path) -> Result<()> {
         self.conn.execute_batch(
             "PRAGMA foreign_keys=OFF; DELETE FROM embeddings; DELETE FROM action_items;
-             DELETE FROM segments_fts; DELETE FROM segments; DELETE FROM meetings;
+             DELETE FROM segments; DELETE FROM meetings;
              DELETE FROM settings; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;",
         )?;
         let size = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);

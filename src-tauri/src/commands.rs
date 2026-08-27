@@ -363,15 +363,13 @@ pub async fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Resu
 /// Delete one meeting and everything derived from it. The schema declares
 /// ON DELETE CASCADE, but foreign-key enforcement is never turned on for
 /// this connection, so the cleanup is explicit — the same approach as
-/// `storage::purge_all`. FTS rows go first: an external-content FTS5 table
-/// can only un-index rows whose source rows still exist.
+/// `storage::purge_all`. The FTS index is NOT touched here: the
+/// segments_fts_ad trigger un-indexes each segment as it is deleted, which
+/// is the only safe way (manually deleting rows the index never held raises
+/// SQLITE_CORRUPT_VTAB — the original v0.2.1 delete bug).
 fn delete_meeting_rows(db: &Db, id: &str) -> anyhow::Result<()> {
     let conn = db.conn();
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "DELETE FROM segments_fts WHERE rowid IN (SELECT rowid FROM segments WHERE meeting_id=?1)",
-        [id],
-    )?;
     tx.execute(
         "DELETE FROM embeddings WHERE segment_id IN (SELECT id FROM segments WHERE meeting_id=?1)",
         [id],
@@ -636,6 +634,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The v0.2.1 delete bug: libraries written before the FTS sync triggers
+    /// existed hold segments the index never saw, and deleting them raised
+    /// SQLITE_CORRUPT_VTAB ("content in the virtual table is corrupt"). The
+    /// one-time rebuild in Db::open must repair such a library so both
+    /// search and delete work.
+    #[test]
+    fn pre_trigger_library_is_rebuilt_and_deletable() {
+        let dir = std::env::temp_dir().join(format!("og-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        {
+            let db = crate::storage::Db::open(&path).unwrap();
+            let transcript = vec![Segment {
+                start_ms: 0, end_ms: 1500, speaker: 0, text: "ephemeral banana".into(), final_: true,
+            }];
+            persist_raw_meeting(&db, "m1", "Doomed", &transcript).unwrap();
+            // Manufacture the legacy state: empty the index and clear the
+            // migration flag, as if the segments predated the triggers.
+            db.conn()
+                .execute_batch(
+                    "INSERT INTO segments_fts(segments_fts) VALUES('delete-all');
+                     DELETE FROM settings WHERE key='fts_rebuilt_v1';",
+                )
+                .unwrap();
+        }
+        let db = crate::storage::Db::open(&path).unwrap(); // migration runs here
+        let hits: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM segments_fts WHERE segments_fts MATCH 'banana'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "rebuild must re-index legacy segments");
+        delete_meeting_rows(&db, "m1").unwrap();
+        let n: i64 = db.conn().query_row("SELECT count(*) FROM meetings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// purge_all deletes segments with the FTS triggers active; it must not
+    /// trip the same virtual-table corruption the per-meeting delete did.
+    #[test]
+    fn purge_all_survives_fts_triggers() {
+        let dir = std::env::temp_dir().join(format!("og-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let mut db = crate::storage::Db::open(&path).unwrap();
+        let transcript = vec![Segment {
+            start_ms: 0, end_ms: 1500, speaker: 0, text: "shred this".into(), final_: true,
+        }];
+        persist_raw_meeting(&db, "m1", "Doomed", &transcript).unwrap();
+        db.purge_all(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Deleting a meeting must remove every derived row (segments, FTS,
     /// embeddings, action items, commitments) and nothing of anyone else's.
     #[test]
@@ -659,8 +714,18 @@ mod tests {
             .query_row("SELECT id FROM segments WHERE meeting_id='m1'", [], |r| r.get(0))
             .unwrap();
         conn.execute("INSERT INTO embeddings(segment_id,vector) VALUES(?1, x'00000000')", [&seg]).unwrap();
-        conn.execute("INSERT INTO segments_fts(rowid, text) SELECT rowid, text FROM segments", [])
-            .unwrap();
+
+        // The insert triggers must have indexed both meetings already.
+        let fts_pre = |term: &str| -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT count(*) FROM segments_fts WHERE segments_fts MATCH ?1",
+                    [term],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!((fts_pre("banana"), fts_pre("coconut")), (1, 1), "triggers must index inserts");
 
         delete_meeting_rows(&db, "m1").unwrap();
 

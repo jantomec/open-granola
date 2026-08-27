@@ -82,7 +82,7 @@ export default function App() {
           setView((v) => (v.kind === "meeting" && v.id === id ? { kind: "home" } : v));
           reloadProjects();
         })
-        .catch((e) => console.error("delete failed:", e)),
+        .catch((e) => setSaveError(`Deleting the meeting failed: ${e}`)),
     [reloadProjects],
   );
   const renameMeeting = useCallback(
@@ -92,7 +92,7 @@ export default function App() {
         .then(() => {
           setMeetings((prev) => prev.map((m) => (m.id === id ? { ...m, title } : m)));
         })
-        .catch((e) => console.error("rename failed:", e)),
+        .catch((e) => setSaveError(`Renaming the meeting failed: ${e}`)),
     [],
   );
 
@@ -162,7 +162,7 @@ export default function App() {
       setView({ kind: "meeting", id });
     } catch (e) {
       console.error("save failed:", e);
-      setSaveError(String(e));
+      setSaveError(`Saving the meeting failed: ${e}`);
     }
   }, []);
 
@@ -235,7 +235,7 @@ export default function App() {
 
       {saveError && (
         <div className="fixed bottom-4 right-4 z-50 max-w-sm rounded-2xl border border-destructive/40 bg-card p-4 shadow-lg">
-          <div className="text-[13px] font-semibold text-destructive">Saving the meeting failed</div>
+          <div className="text-[13px] font-semibold text-destructive">Something went wrong</div>
           <p className="mt-1 break-words text-[12.5px] text-muted-foreground">{saveError}</p>
           <button
             onClick={() => setSaveError(null)}

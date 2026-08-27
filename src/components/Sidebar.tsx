@@ -99,8 +99,9 @@ export function Sidebar(p: Props) {
 
   return (
     <aside className="flex h-full w-[264px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar-background">
-      {/* wordmark */}
-      <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
+      {/* wordmark — pt-10 clears the macOS traffic lights (overlay titlebar,
+          dots at y≈18); the padding doubles as the window drag strip */}
+      <div data-tauri-drag-region className="flex items-center gap-2.5 px-4 pb-2 pt-10">
         <div className="ember-gradient flex h-8 w-8 items-center justify-center rounded-xl shadow-sm">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
             <path
